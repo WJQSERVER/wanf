@@ -3,6 +3,7 @@ package wanf
 import (
 	"bytes"
 	"fmt"
+	"os"
 	"strconv"
 )
 
@@ -505,4 +506,15 @@ func (p *Parser) appendErrorAt(tok Token, msg string) {
 
 func (p *Parser) registerPrefix(tokenType TokenType, fn prefixParseFn) {
 	p.prefixParseFns[tokenType] = fn
+}
+
+// logToken 是一个调试辅助函数, 用于打印当前的 token 信息.
+func (p *Parser) logToken(msg string) {
+	// 你可以把 os.Stderr 换成你喜欢的日志库, 比如 log.Printf
+	// 我们使用 Stderr 以免和程序本身的 stdout 混淆
+	fmt.Fprintf(os.Stderr, "[DEBUGGER] %s: curToken={Type: %s, Literal: '%s'}\n",
+		msg,
+		p.curToken.Type,
+		string(p.curToken.Literal),
+	)
 }
