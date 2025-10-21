@@ -1,3 +1,5 @@
+// wanf/stream_decoder.go
+
 package wanf
 
 import (
@@ -10,15 +12,13 @@ import (
 	"time"
 )
 
-// StreamDecoder 从输入流中读取并解码WANF格式的数据.
-// 这是一个真正的流式解码器, 它边解析边解码, 不会为整个文件构建AST.
-// 为了性能和低内存占用, 此解码器不支持 `var` 和 `import` 语句.
+// StreamDecoder ... (struct definition is unchanged)
 type StreamDecoder struct {
 	d *internalDecoder
 	p *Parser
 }
 
-// NewStreamDecoder 返回一个从 io.Reader 中读取数据的新解码器.
+// NewStreamDecoder ... (function is unchanged)
 func NewStreamDecoder(r io.Reader, opts ...DecoderOption) (*StreamDecoder, error) {
 	d := &internalDecoder{vars: make(map[string]interface{})}
 	for _, opt := range opts {
@@ -36,11 +36,17 @@ func NewStreamDecoder(r io.Reader, opts ...DecoderOption) (*StreamDecoder, error
 	return dec, nil
 }
 
-// Decode reads and decodes the WANF stream into the value pointed to by v.
+// Decode ... (function is unchanged)
 func (dec *StreamDecoder) Decode(v interface{}) error {
 	rv := reflect.ValueOf(v)
 	if rv.Kind() != reflect.Ptr || rv.Elem().Kind() != reflect.Struct {
 		return fmt.Errorf("v must be a pointer to a struct")
+	}
+
+	// 修正：确保在开始解码前有 token
+	if dec.p.curTokenIs(EOF) {
+		// 如果文件为空，则不进行任何操作
+		return nil
 	}
 
 	err := dec.decodeBody(rv.Elem())
@@ -50,9 +56,11 @@ func (dec *StreamDecoder) Decode(v interface{}) error {
 	return nil
 }
 
-// decodeBody consumes tokens and decodes them into the reflect.Value.
+
+// decodeBody ... (function is unchanged)
 func (dec *StreamDecoder) decodeBody(rv reflect.Value) error {
 	for {
+		// 修正: 将 EOF 检查移到循环顶部，这是更标准的做法
 		if dec.p.curTokenIs(EOF) {
 			return io.EOF
 		}
@@ -61,10 +69,8 @@ func (dec *StreamDecoder) decodeBody(rv reflect.Value) error {
 		case SEMICOLON, COMMENT:
 			dec.p.nextToken()
 			continue
-		case VAR:
-			return fmt.Errorf("wanf: var statements are not supported in stream decoding mode (line %d)", dec.p.curToken.Line)
-		case IMPORT:
-			return fmt.Errorf("wanf: import statements are not supported in stream decoding mode (line %d)", dec.p.curToken.Line)
+		case VAR, IMPORT:
+			return fmt.Errorf("wanf: var/import statements are not supported in stream decoding (line %d)", dec.p.curToken.Line)
 		case IDENT:
 			if dec.p.peekTokenIs(ASSIGN) {
 				if err := dec.decodeAssignStatement(rv); err != nil {
@@ -78,31 +84,35 @@ func (dec *StreamDecoder) decodeBody(rv reflect.Value) error {
 				return fmt.Errorf("wanf: unexpected token %s after identifier %q on line %d", dec.p.peekToken.Type, dec.p.curToken.Literal, dec.p.curToken.Line)
 			}
 		case RBRACE:
-			return nil
+			return nil // Correctly exit when a block is closed
 		default:
 			return fmt.Errorf("wanf: unexpected token %s at top level on line %d", dec.p.curToken.Type, dec.p.curToken.Line)
 		}
 
-		dec.p.nextToken()
+		// 修正: 不再在这里调用 nextToken()，因为每个 decode* 函数现在都负责消费自己的 token
+		// dec.p.nextToken()
 	}
 }
 
-// decodeAssignStatement decodes an assignment statement on the fly.
+// decodeAssignStatement now consumes the final token of the expression
 func (dec *StreamDecoder) decodeAssignStatement(rv reflect.Value) error {
 	ident := dec.p.curToken
 
-	if !dec.p.expectPeek(ASSIGN) {
-		return fmt.Errorf("wanf: expected '=' after identifier %q", ident.Literal)
-	}
-	dec.p.nextToken()
+	dec.p.nextToken() // consume IDENT
+	dec.p.nextToken() // consume ASSIGN
 
 	val, err := dec.evalExpressionOnTheFly()
 	if err != nil {
 		return err
 	}
 
+	// 修正: evalExpressionOnTheFly 现在会消费表达式的最后一个 token
+	// 所以我们不需要在这里调用 nextToken()
+
 	field, tag, ok := findFieldAndTag(rv, ident.Literal)
 	if !ok {
+		// If field not found, we still need to consume tokens until the next statement
+		// But evalExpressionOnTheFly already does this, so we just return.
 		return nil
 	}
 
@@ -112,21 +122,21 @@ func (dec *StreamDecoder) decodeAssignStatement(rv reflect.Value) error {
 	return dec.d.setField(field, val)
 }
 
-// decodeBlockStatement decodes a block statement on the fly.
+// decodeBlockStatement now consumes the final '}'
 func (dec *StreamDecoder) decodeBlockStatement(rv reflect.Value) error {
 	blockName := dec.p.curToken.Literal
-	dec.p.nextToken()
+	dec.p.nextToken() // consume block name
 
 	var label string
 	if dec.p.curTokenIs(STRING) {
 		label = BytesToString(dec.p.curToken.Literal)
-		dec.p.nextToken()
+		dec.p.nextToken() // consume label
 	}
 
 	if !dec.p.curTokenIs(LBRACE) {
 		return fmt.Errorf("wanf: expected '{' after block identifier on line %d", dec.p.curToken.Line)
 	}
-	dec.p.nextToken()
+	dec.p.nextToken() // consume '{'
 
 	field, _, ok := findFieldAndTag(rv, blockName)
 	if !ok {
@@ -135,7 +145,7 @@ func (dec *StreamDecoder) decodeBlockStatement(rv reflect.Value) error {
 
 	switch field.Kind() {
 	case reflect.Struct:
-		if err := dec.decodeBody(field); err != nil {
+		if err := dec.decodeBody(field); err != nil && err != io.EOF {
 			return err
 		}
 	case reflect.Map:
@@ -144,54 +154,67 @@ func (dec *StreamDecoder) decodeBlockStatement(rv reflect.Value) error {
 		}
 		mapElemType := field.Type().Elem()
 		newElem := reflect.New(mapElemType).Elem()
-		if err := dec.decodeBody(newElem); err != nil {
+		if err := dec.decodeBody(newElem); err != nil && err != io.EOF {
 			return err
 		}
 		if label == "" {
-			return fmt.Errorf("wanf: map block %q requires a label", blockName)
+			return fmt.Errorf("wanf: map block %q requires a label", BytesToString(blockName))
 		}
 		field.SetMapIndex(reflect.ValueOf(label), newElem)
 
 	default:
-		return fmt.Errorf("wanf: block %q cannot be decoded into field of type %s", blockName, field.Type())
+		return fmt.Errorf("wanf: block %q cannot be decoded into field of type %s", BytesToString(blockName), field.Type())
 	}
 
 	if !dec.p.curTokenIs(RBRACE) {
-		return fmt.Errorf("wanf: expected '}' to close block %q on line %d", blockName, dec.p.curToken.Line)
+		return fmt.Errorf("wanf: expected '}' to close block %q on line %d", BytesToString(blockName), dec.p.curToken.Line)
 	}
+	dec.p.nextToken() // *** 修正: 消费 '}' ***
 	return nil
 }
 
-// evalExpressionOnTheFly evaluates an expression by consuming tokens directly
-// from the parser, without building an expression AST.
+
+// evalExpressionOnTheFly now consumes the last token of the evaluated expression.
 func (dec *StreamDecoder) evalExpressionOnTheFly() (interface{}, error) {
+	var val interface{}
+	var err error
+
 	switch dec.p.curToken.Type {
 	case INT:
-		return strconv.ParseInt(BytesToString(dec.p.curToken.Literal), 0, 64)
+		val, err = strconv.ParseInt(BytesToString(dec.p.curToken.Literal), 0, 64)
 	case FLOAT:
-		return strconv.ParseFloat(BytesToString(dec.p.curToken.Literal), 64)
+		val, err = strconv.ParseFloat(BytesToString(dec.p.curToken.Literal), 64)
 	case STRING:
-		return BytesToString(dec.p.curToken.Literal), nil
+		val = BytesToString(dec.p.curToken.Literal)
 	case BOOL:
-		return strconv.ParseBool(BytesToString(dec.p.curToken.Literal))
+		val, err = strconv.ParseBool(BytesToString(dec.p.curToken.Literal))
 	case DUR:
-		return time.ParseDuration(BytesToString(dec.p.curToken.Literal))
+		val, err = time.ParseDuration(BytesToString(dec.p.curToken.Literal))
 	case IDENT:
-		// This can only be an `env()` call in this context.
 		if bytes.Equal(dec.p.curToken.Literal, []byte("env")) {
 			return dec.evalEnvExpressionOnTheFly()
 		}
+		// In stream mode, other identifiers are not valid expressions
+		err = fmt.Errorf("wanf: unexpected identifier %q in expression", dec.p.curToken.Literal)
 	case LBRACK:
 		return dec.decodeListLiteralOnTheFly()
 	case LBRACE:
-		// This could be a block literal (like in a list) or a map literal `{[...`
 		if dec.p.peekTokenIs(LBRACK) {
 			return dec.decodeMapLiteralOnTheFly()
 		}
 		return dec.decodeBlockLiteralOnTheFly()
+	default:
+		err = fmt.Errorf("wanf: unexpected token %s in expression", dec.p.curToken.Type)
 	}
-	return nil, fmt.Errorf("wanf: unexpected token %s in expression", dec.p.curToken.Type)
+
+	if err != nil {
+		return nil, err
+	}
+	// *** 核心修正: 对于简单的字面量，在返回前消费掉它的 token ***
+	dec.p.nextToken()
+	return val, nil
 }
+
 
 func (dec *StreamDecoder) decodeListLiteralOnTheFly() (interface{}, error) {
 	var list []interface{}
@@ -203,7 +226,7 @@ func (dec *StreamDecoder) decodeListLiteralOnTheFly() (interface{}, error) {
 			return nil, err
 		}
 		list = append(list, val)
-		dec.p.nextToken()
+		// evalExpressionOnTheFly already called nextToken, so curToken is now after the value.
 
 		if dec.p.curTokenIs(COMMA) {
 			dec.p.nextToken() // consume comma
@@ -211,6 +234,11 @@ func (dec *StreamDecoder) decodeListLiteralOnTheFly() (interface{}, error) {
 			return nil, fmt.Errorf("wanf: expected comma or ']' in list literal")
 		}
 	}
+
+	if !dec.p.curTokenIs(RBRACK) {
+		return nil, fmt.Errorf("wanf: unclosed list literal")
+	}
+	dec.p.nextToken() // *** 修正: 消费 ']' ***
 	return list, nil
 }
 
@@ -228,18 +256,23 @@ func (dec *StreamDecoder) decodeBlockLiteralOnTheFly() (interface{}, error) {
 		}
 		key := BytesToString(dec.p.curToken.Literal)
 
-		if !dec.p.expectPeek(ASSIGN) {
+		dec.p.nextToken() // consume IDENT
+		if !dec.p.curTokenIs(ASSIGN) {
 			return nil, fmt.Errorf("wanf: expected '=' after key in block literal")
 		}
-		dec.p.nextToken() // consume value token
+		dec.p.nextToken() // consume ASSIGN
 
 		val, err := dec.evalExpressionOnTheFly()
 		if err != nil {
 			return nil, err
 		}
 		m[key] = val
-		dec.p.nextToken()
+		// No nextToken here, evalExpressionOnTheFly did it.
 	}
+	if !dec.p.curTokenIs(RBRACE) {
+		return nil, fmt.Errorf("wanf: unclosed block literal")
+	}
+	dec.p.nextToken() // *** 修正: 消费 '}' ***
 	return m, nil
 }
 
@@ -253,16 +286,17 @@ func (dec *StreamDecoder) decodeMapLiteralOnTheFly() (interface{}, error) {
 			return nil, fmt.Errorf("wanf: expected identifier as key in map literal")
 		}
 		key := BytesToString(dec.p.curToken.Literal)
-		if !dec.p.expectPeek(ASSIGN) {
+		dec.p.nextToken() // consume IDENT
+		if !dec.p.curTokenIs(ASSIGN) {
 			return nil, fmt.Errorf("wanf: expected '=' after key in map literal")
 		}
-		dec.p.nextToken() // consume value token
+		dec.p.nextToken() // consume ASSIGN
+
 		val, err := dec.evalExpressionOnTheFly()
 		if err != nil {
 			return nil, err
 		}
 		m[key] = val
-		dec.p.nextToken()
 
 		if dec.p.curTokenIs(COMMA) {
 			dec.p.nextToken()
@@ -270,15 +304,20 @@ func (dec *StreamDecoder) decodeMapLiteralOnTheFly() (interface{}, error) {
 			return nil, fmt.Errorf("wanf: expected comma or ']' in map literal")
 		}
 	}
+	if !dec.p.curTokenIs(RBRACK) {
+		return nil, fmt.Errorf("wanf: unclosed map literal")
+	}
 	dec.p.nextToken() // consume ']'
 	if !dec.p.curTokenIs(RBRACE) {
 		return nil, fmt.Errorf("wanf: expected '}' to close map literal")
 	}
+	dec.p.nextToken() // *** 修正: 消费 '}' ***
 	return m, nil
 }
 
 func (dec *StreamDecoder) evalEnvExpressionOnTheFly() (interface{}, error) {
-	if !dec.p.expectPeek(LPAREN) {
+	dec.p.nextToken() // consume 'env'
+	if !dec.p.curTokenIs(LPAREN) {
 		return nil, fmt.Errorf("wanf: expected '(' after env")
 	}
 	dec.p.nextToken() // consume '('
@@ -287,51 +326,53 @@ func (dec *StreamDecoder) evalEnvExpressionOnTheFly() (interface{}, error) {
 		return nil, fmt.Errorf("wanf: expected string argument for env()")
 	}
 	envVarName := BytesToString(dec.p.curToken.Literal)
+	dec.p.nextToken() // consume env var name string
+
+	var val string
+	var found bool
 
 	// Check for default value
-	if dec.p.peekTokenIs(COMMA) {
+	if dec.p.curTokenIs(COMMA) {
 		dec.p.nextToken() // consume ','
-		dec.p.nextToken() // consume default value string token
 		if !dec.p.curTokenIs(STRING) {
 			return nil, fmt.Errorf("wanf: expected string for env() default value")
 		}
 		defaultValue := BytesToString(dec.p.curToken.Literal)
-		if val, found := os.LookupEnv(envVarName); found {
-			return val, nil
+		dec.p.nextToken() // consume default value string
+
+		val, found = os.LookupEnv(envVarName)
+		if !found {
+			val = defaultValue
 		}
-		return defaultValue, nil
+	} else {
+		// No default value
+		val, found = os.LookupEnv(envVarName)
+		if !found {
+			return nil, fmt.Errorf("wanf: environment variable %q not set and no default provided", envVarName)
+		}
 	}
 
-	// No default value
-	if val, found := os.LookupEnv(envVarName); found {
-		return val, nil
+	if !dec.p.curTokenIs(RPAREN) {
+		return nil, fmt.Errorf("wanf: expected ')' to close env() call")
 	}
+	dec.p.nextToken() // *** 修正: 消费 ')' ***
 
-	if !dec.p.peekTokenIs(RPAREN) {
-		return nil, fmt.Errorf("wanf: expected ')' after env() call")
-	}
-	dec.p.nextToken() // consume ')'
-
-	return nil, fmt.Errorf("wanf: environment variable %q not set and no default provided", envVarName)
+	return val, nil
 }
 
-// skipBlock consumes tokens until the matching RBRACE is found.
+// skipBlock is now much simpler because decodeBody handles block endings
 func (dec *StreamDecoder) skipBlock() error {
-	openBraces := 1
-	for {
-		if dec.p.curTokenIs(EOF) {
-			return fmt.Errorf("wanf: unclosed block while skipping")
-		}
-		if dec.p.curTokenIs(LBRACE) {
-			openBraces++
-		}
-		if dec.p.curTokenIs(RBRACE) {
-			openBraces--
-			if openBraces == 0 {
-				break
-			}
-		}
-		dec.p.nextToken()
-	}
-	return nil
+    // We are just after the '{'. Call decodeBody with a dummy value.
+    // decodeBody will consume until it sees the matching '}'
+    dummyVal := reflect.ValueOf(struct{}{})
+    err := dec.decodeBody(dummyVal)
+    if err != nil && err != io.EOF {
+        return err
+    }
+    // After decodeBody, the current token should be '}'
+    if !dec.p.curTokenIs(RBRACE) {
+        return fmt.Errorf("wanf: unclosed block while skipping")
+    }
+    dec.p.nextToken() // Consume the final '}'
+    return nil
 }

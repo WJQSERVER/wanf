@@ -22,7 +22,7 @@ func TestStreamDecoder_VarError(t *testing.T) {
 		t.Fatal("Expected an error for var statement, but got nil")
 	}
 
-	expectedError := "var statements are not supported in stream decoding mode"
+	expectedError := "var/import statements are not supported"
 	if !strings.Contains(err.Error(), expectedError) {
 		t.Errorf("Expected error to contain %q, but got: %v", expectedError, err)
 	}
@@ -45,7 +45,7 @@ func TestStreamDecoder_ImportError(t *testing.T) {
 		t.Fatal("Expected an error for import statement, but got nil")
 	}
 
-	expectedError := "import statements are not supported in stream decoding mode"
+	expectedError := "var/import statements are not supported"
 	if !strings.Contains(err.Error(), expectedError) {
 		t.Errorf("Expected error to contain %q, but got: %v", expectedError, err)
 	}
