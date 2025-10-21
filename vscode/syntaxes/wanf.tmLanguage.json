@@ -93,7 +93,7 @@
       "patterns": [
         {
           "comment": "匹配 'var' 关键字和其后定义的变量名",
-          "match": "\\b(var)\\s+([a-zA-Z_][a-zA-Z0-9_]*)\\b",
+          "match": "\\b(var)\\s+([a-zA-Z_][\\p{L}\\p{N}_\\p{P}\\p{S}]*)\\b",
           "captures": {
             "1": { "name": "keyword.control.wanf" },
             "2": { "name": "variable.other.definition.wanf" }

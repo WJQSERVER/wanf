@@ -244,5 +244,11 @@ func isIdentifierStart(ch byte) bool {
 	return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || ch == '_'
 }
 func isIdentifierChar(ch byte) bool {
-	return isIdentifierStart(ch) || unicode.IsDigit(rune(ch))
+	r := rune(ch) // 将byte转换为rune，以便使用unicode包的函数
+
+	return unicode.IsLetter(r) || // 检查是否为Unicode字母 (包括英文、中文等所有语言的字母)
+		unicode.IsDigit(r) || // 检查是否为Unicode十进制数字 (包括0-9等)
+		ch == '_' || // 检查是否为下划线
+		unicode.IsPunct(r) || // 检查是否为Unicode标点符号 (如逗号, 句号, 括号, 引号等)
+		unicode.IsSymbol(r) // 检查是否为Unicode通用符号 (如货币符号, 数学符号, 箭头等)
 }
