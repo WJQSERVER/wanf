@@ -201,3 +201,39 @@ func BenchmarkStreamEncode(b *testing.B) {
 		_ = enc.Encode(&config) // Using default options for benchmark
 	}
 }
+
+func BenchmarkLexerDurationSingle(b *testing.B) {
+	input := []byte("10s")
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		l := NewLexer(input)
+		l.NextToken()
+	}
+}
+
+func BenchmarkLexerDurationCompound(b *testing.B) {
+	input := []byte("1h30m45s")
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		l := NewLexer(input)
+		l.NextToken()
+	}
+}
+
+func BenchmarkStreamLexerDurationSingle(b *testing.B) {
+	input := []byte("10s")
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		l := newStreamLexer(bytes.NewReader(input))
+		l.NextToken()
+	}
+}
+
+func BenchmarkStreamLexerDurationCompound(b *testing.B) {
+	input := []byte("1h30m45s")
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		l := newStreamLexer(bytes.NewReader(input))
+		l.NextToken()
+	}
+}

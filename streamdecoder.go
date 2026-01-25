@@ -72,8 +72,10 @@ func (dec *StreamDecoder) decodeBody(rv reflect.Value) error {
 		case SEMICOLON, COMMENT: // 忽略分号和注释
 			dec.p.nextToken()
 			continue
-		case VAR, IMPORT: // 流式解码不支持var/import语句
-			return fmt.Errorf("wanf: var/import statements are not supported in stream decoding (line %d)", dec.p.curToken.Line)
+		case VAR: // 流式解码不支持var语句
+			return fmt.Errorf("wanf: var statements are not supported in stream decoding mode (line %d)", dec.p.curToken.Line)
+		case IMPORT: // 流式解码不支持import语句
+			return fmt.Errorf("wanf: import statements are not supported in stream decoding mode (line %d)", dec.p.curToken.Line)
 		case IDENT: // 处理标识符
 			if dec.p.peekTokenIs(ASSIGN) { // 如果是赋值语句
 				if err := dec.decodeAssignStatement(rv); err != nil {

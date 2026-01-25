@@ -3,12 +3,12 @@ name: Go Test Ci
 on:
   # 允许手动触发
   workflow_dispatch:
-  
+
   # 每次提交代码触发
   push:
     branches:
       - '**'
-      
+
   # 开启 PR 时触发
   pull_request:
     branches:
@@ -17,7 +17,7 @@ on:
 jobs:
   test-and-bench:
     runs-on: ubuntu-latest
-    
+
     steps:
       - name: Checkout Code
         uses: actions/checkout@v6
