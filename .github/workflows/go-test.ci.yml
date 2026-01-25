@@ -1,42 +1,41 @@
 name: Go Test Ci
 
 on:
+  # 允许手动触发
+  workflow_dispatch:
+  
+  # 每次提交代码触发
   push:
     branches:
       - '**'
+      
+  # 开启 PR 时触发
   pull_request:
     branches:
       - '**'
 
 jobs:
   test-and-bench:
-    # 使用最新的 Ubuntu 运行环境
     runs-on: ubuntu-latest
     
     steps:
       - name: Checkout Code
-        # 更新至 v6 版本，支持 Node 24 运行时，速度更快
         uses: actions/checkout@v6
 
       - name: Set up Go
-        # 更新至 v6 版本，内置了更强大的依赖缓存机制
         uses: actions/setup-go@v6
         with:
-          # 指定你要求的 Go 1.25
           go-version: '1.25'
-          # 开启自动缓存，加速后续提交的构建速度
           cache: true
-          # 始终检查最新的补丁版本 (如 1.25.6)
           check-latest: true
 
       - name: Install Dependencies
         run: go mod download
 
       - name: Run Tests with Race Detector
-        # 针对你的路径并发状态机，开启 -race 竞态检测至关重要
+        # 确保并发探测逻辑不存在竞态冲突
         run: go test -v -race ./...
 
       - name: Run Benchmarks
-        # 运行性能基准测试并显示内存分配情况
-        # 建议你在代码中实现对 Move 方法的 Benchmark
+        # 性能压测，关注内存分配和执行效率
         run: go test -v -bench=. -benchmem ./...
