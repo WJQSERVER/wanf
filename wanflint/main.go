@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"runtime/debug"
 	"sync"
 
 	"github.com/WJQSERVER/wanf"
@@ -23,6 +24,7 @@ Usage:
 Commands:
   lint [path ...]   lint files and report issues
   fmt [path ...]    format files
+  info              display information about wanflint
 `
 
 func main() {
@@ -61,6 +63,10 @@ func main() {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
+	case "info":
+		fmt.Printf("wanflint version: %s\n", getWanfVersion())
+		fmt.Printf("Go version: %s\n", runtime.Version())
+		fmt.Printf("OS/Arch: %s/%s\n", runtime.GOOS, runtime.GOARCH)
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown command: %q\n", os.Args[1])
 		fmt.Fprint(os.Stderr, usage)
@@ -181,4 +187,19 @@ func formatFile(path string, displayOnly bool, noSort bool) error {
 		fmt.Printf("Formatted %s\n", path)
 	}
 	return nil
+}
+
+func getWanfVersion() string {
+	if modInfo, ok := debug.ReadBuildInfo(); ok {
+		for _, dep := range modInfo.Deps {
+			if dep.Path == "github.com/WJQSERVER/wanf" {
+				return dep.Version
+			}
+		}
+		// If it's the main module (e.g. during development/build)
+		if modInfo.Main.Path == "github.com/WJQSERVER/wanf" {
+			return modInfo.Main.Version
+		}
+	}
+	return "unknown"
 }
