@@ -133,7 +133,7 @@ func (l *streamLexer) NextToken() Token {
 			tok.Line = line
 			tok.Column = col
 			return tok
-		} else if unicode.IsDigit(rune(l.ch)) {
+		} else if l.ch >= '0' && l.ch <= '9' {
 			literal := l.readNumber()
 			if isDurationUnit(l.ch, l.peekChar()) {
 				tok.Type = DUR
@@ -177,7 +177,7 @@ func (l *streamLexer) readDurationCompound(prefix []byte) []byte {
 	buf.Write(prefix)
 	for {
 		l.appendDurationSuffix(buf)
-		if !unicode.IsDigit(rune(l.ch)) && l.ch != '.' {
+		if !((l.ch >= '0' && l.ch <= '9') || l.ch == '.') {
 			break
 		}
 		if !l.peekNextNumberHasUnit() {
@@ -211,7 +211,7 @@ func (l *streamLexer) peekNextNumberHasUnit() bool {
 	ch := l.ch
 	if ch == '.' {
 		isFloat = true
-	} else if !unicode.IsDigit(rune(ch)) {
+	} else if !(ch >= '0' && ch <= '9') {
 		return false
 	}
 
@@ -219,7 +219,7 @@ func (l *streamLexer) peekNextNumberHasUnit() bool {
 	i := 0
 	for i < len(peek) {
 		c := peek[i]
-		if unicode.IsDigit(rune(c)) {
+		if c >= '0' && c <= '9' {
 			i++
 		} else if c == '.' && !isFloat {
 			isFloat = true
@@ -302,7 +302,7 @@ func (l *streamLexer) readIdentifier() []byte {
 
 func (l *streamLexer) appendNumber(buf *bytes.Buffer) {
 	isFloat := false
-	for unicode.IsDigit(rune(l.ch)) || (l.ch == '.' && !isFloat) {
+	for (l.ch >= '0' && l.ch <= '9') || (l.ch == '.' && !isFloat) {
 		if l.ch == '.' {
 			isFloat = true
 		}

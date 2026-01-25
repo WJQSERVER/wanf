@@ -116,19 +116,20 @@ func (l *Lexer) NextToken() Token {
 			tok.Line = line
 			tok.Column = col
 			return tok
-		} else if unicode.IsDigit(rune(l.ch)) {
+		} else if l.ch >= '0' && l.ch <= '9' {
 			startPos := l.position
 			literal := l.readNumber()
 			if isDurationUnit(l.ch, l.peekChar()) {
 				for {
 					l.readDurationSuffix()
-					if !unicode.IsDigit(rune(l.ch)) && l.ch != '.' {
+					if !((l.ch >= '0' && l.ch <= '9') || l.ch == '.') {
 						break
 					}
-					if !l.peekNextNumberHasUnit() {
+					numLen, hasUnit := l.peekNumberWithUnit()
+					if !hasUnit {
 						break
 					}
-					l.readNumber()
+					l.skipBytes(numLen)
 				}
 				tok.Type = DUR
 				tok.Literal = l.input[startPos:l.position]
@@ -165,12 +166,13 @@ func (l *Lexer) readDurationSuffix() {
 	l.readChar()
 }
 
-func (l *Lexer) peekNextNumberHasUnit() bool {
+func (l *Lexer) peekNumberWithUnit() (int, bool) {
 	p := l.position
 	isFloat := false
+	start := p
 	for p < len(l.input) {
 		ch := l.input[p]
-		if unicode.IsDigit(rune(ch)) {
+		if ch >= '0' && ch <= '9' {
 			p++
 		} else if ch == '.' && !isFloat {
 			isFloat = true
@@ -180,15 +182,29 @@ func (l *Lexer) peekNextNumberHasUnit() bool {
 		}
 	}
 
-	if p >= len(l.input) {
-		return false
+	if p == start || p >= len(l.input) {
+		return 0, false
 	}
 
 	var next byte
 	if p+1 < len(l.input) {
 		next = l.input[p+1]
 	}
-	return isDurationUnit(l.input[p], next)
+	if isDurationUnit(l.input[p], next) {
+		return p - start, true
+	}
+	return 0, false
+}
+
+func (l *Lexer) skipBytes(n int) {
+	l.position += n
+	l.readPosition = l.position + 1
+	l.column += n
+	if l.position >= len(l.input) {
+		l.ch = 0
+	} else {
+		l.ch = l.input[l.position]
+	}
 }
 func (l *Lexer) skipWhitespace() {
 	for l.ch == ' ' || l.ch == '\t' || l.ch == '\r' || l.ch == '\n' {
@@ -239,7 +255,7 @@ func (l *Lexer) readIdentifier() []byte {
 func (l *Lexer) readNumber() []byte {
 	position := l.position
 	isFloat := false
-	for unicode.IsDigit(rune(l.ch)) || (l.ch == '.' && !isFloat) {
+	for (l.ch >= '0' && l.ch <= '9') || (l.ch == '.' && !isFloat) {
 		if l.ch == '.' {
 			isFloat = true
 		}
@@ -298,9 +314,16 @@ func isIdentifierStart(ch byte) bool {
 func isIdentifierChar(ch byte) bool {
 	r := rune(ch) // 将byte转换为rune，以便使用unicode包的函数
 
-	return unicode.IsLetter(r) || // 检查是否为Unicode字母 (包括英文、中文等所有语言的字母)
-		unicode.IsDigit(r) || // 检查是否为Unicode十进制数字 (包括0-9等)
-		ch == '_' || // 检查是否为下划线
-		unicode.IsPunct(r) || // 检查是否为Unicode标点符号 (如逗号, 句号, 括号, 引号等)
-		unicode.IsSymbol(r) // 检查是否为Unicode通用符号 (如货币符号, 数学符号, 箭头等)
+	if unicode.IsLetter(r) || unicode.IsDigit(r) || ch == '_' {
+		return true
+	}
+
+	// 排除 WANF 中的分隔符和特殊符号，这些不能作为标识符的一部分
+	switch ch {
+	case '=', ',', ';', '{', '}', '[', ']', '(', ')', '"', '\'', '`', '/', '*', '$', '#':
+		return false
+	}
+
+	return unicode.IsPunct(r) || // 检查是否为Unicode标点符号
+		unicode.IsSymbol(r) // 检查是否为Unicode通用符号
 }
