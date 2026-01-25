@@ -89,3 +89,48 @@ line2` + "`" + `
 		}
 	}
 }
+
+func TestLexerDuration(t *testing.T) {
+	tests := []struct {
+		input           string
+		expectedType    TokenType
+		expectedLiteral string
+	}{
+		{"10s", DUR, "10s"},
+		{"1h30m45s", DUR, "1h30m45s"},
+		{"10µs", DUR, "10µs"},
+		{"10us", DUR, "10us"},
+		{"10ms", DUR, "10ms"},
+		{"10ns", DUR, "10ns"},
+		{"1.5h", DUR, "1.5h"},
+		{"1h30m45", DUR, "1h30m"}, // 45 is not part of DUR because it lacks unit
+	}
+
+	for _, tt := range tests {
+		t.Run("StandardLexer_"+tt.input, func(t *testing.T) {
+			l := NewLexer([]byte(tt.input))
+			tok := l.NextToken()
+
+			if tok.Type != tt.expectedType {
+				t.Errorf("tokentype wrong. expected=%q, got=%q", tt.expectedType, tok.Type)
+			}
+
+			if string(tok.Literal) != tt.expectedLiteral {
+				t.Errorf("literal wrong. expected=%q, got=%q", tt.expectedLiteral, string(tok.Literal))
+			}
+		})
+
+		t.Run("StreamLexer_"+tt.input, func(t *testing.T) {
+			l := newStreamLexer(strings.NewReader(tt.input))
+			tok := l.NextToken()
+
+			if tok.Type != tt.expectedType {
+				t.Errorf("tokentype wrong. expected=%q, got=%q", tt.expectedType, tok.Type)
+			}
+
+			if string(tok.Literal) != tt.expectedLiteral {
+				t.Errorf("literal wrong. expected=%q, got=%q", tt.expectedLiteral, string(tok.Literal))
+			}
+		})
+	}
+}

@@ -135,9 +135,9 @@ func (l *streamLexer) NextToken() Token {
 			return tok
 		} else if unicode.IsDigit(rune(l.ch)) {
 			literal := l.readNumber()
-			if l.ch == 's' || l.ch == 'm' || l.ch == 'h' || (l.ch == 'u' && l.peekChar() == 's') || (l.ch == 'n' && l.peekChar() == 's') || (l.ch == 'm' && l.peekChar() == 's') {
+			if isDurationUnit(l.ch, l.peekChar()) {
 				tok.Type = DUR
-				tok.Literal = l.readDurationSuffix(literal)
+				tok.Literal = l.readDurationCompound(literal)
 			} else {
 				if bytes.Contains(literal, dot) {
 					tok.Type = FLOAT
@@ -172,10 +172,31 @@ func (l *streamLexer) activeBuffer() *bytes.Buffer {
 	return buf
 }
 
-func (l *streamLexer) readDurationSuffix(prefix []byte) []byte {
+func (l *streamLexer) readDurationCompound(prefix []byte) []byte {
 	buf := l.activeBuffer()
 	buf.Write(prefix)
+	for {
+		l.appendDurationSuffix(buf)
+		if !unicode.IsDigit(rune(l.ch)) && l.ch != '.' {
+			break
+		}
+		if !l.peekNextNumberHasUnit() {
+			break
+		}
+		l.appendNumber(buf)
+	}
+	return buf.Bytes()
+}
+
+func (l *streamLexer) appendDurationSuffix(buf *bytes.Buffer) {
 	if l.ch == 'm' || l.ch == 'u' || l.ch == 'n' {
+		if l.peekChar() == 's' {
+			buf.WriteByte(l.ch)
+			l.readChar()
+		}
+	} else if l.ch == 0xC2 && l.peekChar() == 0xB5 {
+		buf.WriteByte(l.ch)
+		l.readChar()
 		if l.peekChar() == 's' {
 			buf.WriteByte(l.ch)
 			l.readChar()
@@ -183,7 +204,43 @@ func (l *streamLexer) readDurationSuffix(prefix []byte) []byte {
 	}
 	buf.WriteByte(l.ch)
 	l.readChar()
-	return buf.Bytes()
+}
+
+func (l *streamLexer) peekNextNumberHasUnit() bool {
+	isFloat := false
+	ch := l.ch
+	if ch == '.' {
+		isFloat = true
+	} else if !unicode.IsDigit(rune(ch)) {
+		return false
+	}
+
+	peek, _ := l.r.Peek(64)
+	i := 0
+	for i < len(peek) {
+		c := peek[i]
+		if unicode.IsDigit(rune(c)) {
+			i++
+		} else if c == '.' && !isFloat {
+			isFloat = true
+			i++
+		} else {
+			break
+		}
+	}
+
+	var unitChar byte
+	var unitNext byte
+	if i < len(peek) {
+		unitChar = peek[i]
+		if i+1 < len(peek) {
+			unitNext = peek[i+1]
+		}
+	} else {
+		return false
+	}
+
+	return isDurationUnit(unitChar, unitNext)
 }
 
 func (l *streamLexer) skipWhitespace() {
@@ -243,8 +300,7 @@ func (l *streamLexer) readIdentifier() []byte {
 	return buf.Bytes()
 }
 
-func (l *streamLexer) readNumber() []byte {
-	buf := l.activeBuffer()
+func (l *streamLexer) appendNumber(buf *bytes.Buffer) {
 	isFloat := false
 	for unicode.IsDigit(rune(l.ch)) || (l.ch == '.' && !isFloat) {
 		if l.ch == '.' {
@@ -253,6 +309,11 @@ func (l *streamLexer) readNumber() []byte {
 		buf.WriteByte(l.ch)
 		l.readChar()
 	}
+}
+
+func (l *streamLexer) readNumber() []byte {
+	buf := l.activeBuffer()
+	l.appendNumber(buf)
 	return buf.Bytes()
 }
 

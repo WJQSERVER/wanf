@@ -117,10 +117,19 @@ func (l *Lexer) NextToken() Token {
 			tok.Column = col
 			return tok
 		} else if unicode.IsDigit(rune(l.ch)) {
+			startPos := l.position
 			literal := l.readNumber()
-			if l.ch == 's' || l.ch == 'm' || l.ch == 'h' || (l.ch == 'u' && l.peekChar() == 's') || (l.ch == 'n' && l.peekChar() == 's') || (l.ch == 'm' && l.peekChar() == 's') {
-				startPos := l.position - len(literal)
-				l.readDurationSuffix()
+			if isDurationUnit(l.ch, l.peekChar()) {
+				for {
+					l.readDurationSuffix()
+					if !unicode.IsDigit(rune(l.ch)) && l.ch != '.' {
+						break
+					}
+					if !l.peekNextNumberHasUnit() {
+						break
+					}
+					l.readNumber()
+				}
 				tok.Type = DUR
 				tok.Literal = l.input[startPos:l.position]
 			} else {
@@ -147,8 +156,39 @@ func (l *Lexer) readDurationSuffix() {
 		if l.peekChar() == 's' {
 			l.readChar()
 		}
+	} else if l.ch == 0xC2 && l.peekChar() == 0xB5 {
+		l.readChar()
+		if l.peekChar() == 's' {
+			l.readChar()
+		}
 	}
 	l.readChar()
+}
+
+func (l *Lexer) peekNextNumberHasUnit() bool {
+	p := l.position
+	isFloat := false
+	for p < len(l.input) {
+		ch := l.input[p]
+		if unicode.IsDigit(rune(ch)) {
+			p++
+		} else if ch == '.' && !isFloat {
+			isFloat = true
+			p++
+		} else {
+			break
+		}
+	}
+
+	if p >= len(l.input) {
+		return false
+	}
+
+	var next byte
+	if p+1 < len(l.input) {
+		next = l.input[p+1]
+	}
+	return isDurationUnit(l.input[p], next)
 }
 func (l *Lexer) skipWhitespace() {
 	for l.ch == ' ' || l.ch == '\t' || l.ch == '\r' || l.ch == '\n' {
@@ -240,6 +280,18 @@ func (l *Lexer) peekChar() byte {
 func (l *Lexer) newToken(tokenType TokenType, ch byte, line, column int) Token {
 	return Token{Type: tokenType, Literal: singleCharByteSlices[ch], Line: line, Column: column}
 }
+func isDurationUnit(ch byte, next byte) bool {
+	switch ch {
+	case 'h', 'm', 's':
+		return true
+	case 'u', 'n':
+		return next == 's'
+	case 0xC2: // UTF-8 for µ is 0xC2 0xB5
+		return next == 0xB5
+	}
+	return false
+}
+
 func isIdentifierStart(ch byte) bool {
 	return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || ch == '_'
 }
