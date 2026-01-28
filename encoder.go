@@ -14,8 +14,6 @@ import (
 	"unicode/utf8"
 )
 
-var durationType = reflect.TypeOf(time.Duration(0))
-
 var encoderPool = sync.Pool{
 	New: func() interface{} {
 		return &internalEncoder{
@@ -201,8 +199,17 @@ func (e *internalEncoder) encodeField(f fieldInfo, depth int) {
 	e.writeSpace()
 
 	if f.isBlock {
-		if f.value.Kind() == reflect.Map {
-			e.encodeMap(f.value, depth+1)
+		v := f.value
+		if v.Kind() == reflect.Ptr {
+			if v.IsNil() {
+				return
+			}
+			v = v.Elem()
+		}
+		if v.Kind() == reflect.Map {
+			e.encodeMap(v, depth+1)
+		} else if v.Type() == syncMapType {
+			e.encodeSyncMap(v, depth+1)
 		} else {
 			e.buf.WriteString("{")
 			e.writeNewLine()
@@ -221,7 +228,7 @@ func (e *internalEncoder) encodeField(f fieldInfo, depth int) {
 }
 
 func (e *internalEncoder) encodeValue(v reflect.Value, depth int) {
-	if v.Kind() == reflect.Ptr {
+	if v.Kind() == reflect.Ptr || v.Kind() == reflect.Interface {
 		if v.IsNil() {
 			return
 		}
@@ -229,6 +236,10 @@ func (e *internalEncoder) encodeValue(v reflect.Value, depth int) {
 	}
 	if v.Type() == durationType {
 		e.buf.WriteString(time.Duration(v.Int()).String())
+		return
+	}
+	if v.Type() == syncMapType {
+		e.encodeSyncMap(v, depth)
 		return
 	}
 	switch v.Kind() {
@@ -295,6 +306,32 @@ func (e *internalEncoder) encodeSlice(v reflect.Value, depth int) {
 		e.writeIndent()
 	}
 	e.buf.WriteString("]")
+}
+
+func (e *internalEncoder) encodeSyncMap(v reflect.Value, depth int) {
+	var m *sync.Map
+	if v.CanAddr() {
+		m = v.Addr().Interface().(*sync.Map)
+	} else {
+		// If not addressable, we need to copy it to an addressable variable
+		tmp := reflect.New(v.Type()).Elem()
+		tmp.Set(v)
+		m = tmp.Addr().Interface().(*sync.Map)
+	}
+
+	tmpMap := make(map[string]interface{})
+	m.Range(func(k, v interface{}) bool {
+		var key string
+		if s, ok := k.(string); ok {
+			key = s
+		} else {
+			key = fmt.Sprint(k)
+		}
+		tmpMap[key] = v
+		return true
+	})
+
+	e.encodeMap(reflect.ValueOf(tmpMap), depth)
 }
 
 func (e *internalEncoder) encodeMap(v reflect.Value, depth int) {
@@ -538,8 +575,17 @@ func (e *streamInternalEncoder) encodeField(f fieldInfo, depth int) {
 	e.writeSpace()
 
 	if f.isBlock {
-		if f.value.Kind() == reflect.Map {
-			e.encodeMap(f.value, depth+1)
+		v := f.value
+		if v.Kind() == reflect.Ptr {
+			if v.IsNil() {
+				return
+			}
+			v = v.Elem()
+		}
+		if v.Kind() == reflect.Map {
+			e.encodeMap(v, depth+1)
+		} else if v.Type() == syncMapType {
+			e.encodeSyncMap(v, depth+1)
 		} else {
 			e.writeString("{")
 			e.writeNewLine()
@@ -561,7 +607,7 @@ func (e *streamInternalEncoder) encodeValue(v reflect.Value, depth int) {
 	if e.err != nil {
 		return
 	}
-	if v.Kind() == reflect.Ptr {
+	if v.Kind() == reflect.Ptr || v.Kind() == reflect.Interface {
 		if v.IsNil() {
 			return
 		}
@@ -569,6 +615,10 @@ func (e *streamInternalEncoder) encodeValue(v reflect.Value, depth int) {
 	}
 	if v.Type() == durationType {
 		e.writeString(time.Duration(v.Int()).String())
+		return
+	}
+	if v.Type() == syncMapType {
+		e.encodeSyncMap(v, depth)
 		return
 	}
 	switch v.Kind() {
@@ -638,6 +688,31 @@ func (e *streamInternalEncoder) encodeSlice(v reflect.Value, depth int) {
 		e.writeIndent()
 	}
 	e.writeByte(']')
+}
+
+func (e *streamInternalEncoder) encodeSyncMap(v reflect.Value, depth int) {
+	var m *sync.Map
+	if v.CanAddr() {
+		m = v.Addr().Interface().(*sync.Map)
+	} else {
+		tmp := reflect.New(v.Type()).Elem()
+		tmp.Set(v)
+		m = tmp.Addr().Interface().(*sync.Map)
+	}
+
+	tmpMap := make(map[string]interface{})
+	m.Range(func(k, v interface{}) bool {
+		var key string
+		if s, ok := k.(string); ok {
+			key = s
+		} else {
+			key = fmt.Sprint(k)
+		}
+		tmpMap[key] = v
+		return true
+	})
+
+	e.encodeMap(reflect.ValueOf(tmpMap), depth)
 }
 
 func (e *streamInternalEncoder) encodeMap(v reflect.Value, depth int) {
@@ -761,6 +836,22 @@ func isBlockType(ft reflect.Type, tag wanfTag) bool {
 }
 
 func isZero(v reflect.Value) bool {
+	if v.Type() == syncMapType {
+		var m *sync.Map
+		if v.CanAddr() {
+			m = v.Addr().Interface().(*sync.Map)
+		} else {
+			tmp := reflect.New(v.Type()).Elem()
+			tmp.Set(v)
+			m = tmp.Addr().Interface().(*sync.Map)
+		}
+		isEmpty := true
+		m.Range(func(key, value interface{}) bool {
+			isEmpty = false
+			return false
+		})
+		return isEmpty
+	}
 	switch v.Kind() {
 	case reflect.String:
 		return v.Len() == 0
