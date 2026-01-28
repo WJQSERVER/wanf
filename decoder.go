@@ -199,11 +199,26 @@ func (d *internalDecoder) decodeBlock(stmt *BlockStatement, rv reflect.Value) er
 	if !ok {
 		return nil
 	}
-	if field.Kind() == reflect.Ptr && field.Type().Elem().Kind() == reflect.Struct {
+	if field.Kind() == reflect.Ptr && field.Type().Elem().Kind() == reflect.Struct && field.Type().Elem() != syncMapType {
 		if field.IsNil() {
 			field.Set(reflect.New(field.Type().Elem()))
 		}
 		return d.decodeRoot(stmt.Body, field.Elem())
+	}
+	if field.Type() == syncMapType {
+		if stmt.Label == nil {
+			return fmt.Errorf("block %q is for a sync.Map, but is missing a label", string(stmt.Name.Value))
+		}
+		m, ok := field.Addr().Interface().(*sync.Map)
+		if !ok {
+			return fmt.Errorf("wanf: cannot get *sync.Map from field")
+		}
+		val, err := d.decodeBlockToMap(stmt.Body)
+		if err != nil {
+			return err
+		}
+		m.Store(string(stmt.Label.Value), val)
+		return nil
 	}
 	if field.Kind() == reflect.Struct {
 		return d.decodeRoot(stmt.Body, field)
@@ -287,6 +302,9 @@ func (d *internalDecoder) setField(field reflect.Value, val interface{}) error {
 		field.Set(v.Convert(field.Type()))
 		return nil
 	}
+	if field.Type() == syncMapType {
+		return d.setSyncMapField(field, v)
+	}
 	if field.Kind() == reflect.Map && v.Kind() == reflect.Map {
 		return d.setMapField(field, v)
 	}
@@ -294,6 +312,23 @@ func (d *internalDecoder) setField(field reflect.Value, val interface{}) error {
 		return d.setSliceField(field, v)
 	}
 	return fmt.Errorf("cannot set field of type %s with value of type %T", field.Type(), val)
+}
+
+func (d *internalDecoder) setSyncMapField(field reflect.Value, v reflect.Value) error {
+	m, ok := field.Addr().Interface().(*sync.Map)
+	if !ok {
+		return fmt.Errorf("wanf: cannot get *sync.Map from field")
+	}
+
+	if v.Kind() != reflect.Map {
+		return fmt.Errorf("wanf: value for sync.Map must be a map, got %s", v.Kind())
+	}
+
+	iter := v.MapRange()
+	for iter.Next() {
+		m.Store(iter.Key().Interface(), iter.Value().Interface())
+	}
+	return nil
 }
 
 func (d *internalDecoder) setMapField(field, v reflect.Value) error {

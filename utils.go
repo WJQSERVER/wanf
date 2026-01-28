@@ -1,6 +1,16 @@
 package wanf
 
-import "unsafe"
+import (
+	"reflect"
+	"sync"
+	"time"
+	"unsafe"
+)
+
+var (
+	durationType = reflect.TypeOf(time.Duration(0))
+	syncMapType  = reflect.TypeOf(sync.Map{})
+)
 
 // StringToBytes 将字符串转换为字节切片, 不进行内存分配.
 // 更多详情, 请参见 https://github.com/golang/go/issues/53003#issuecomment-1140276077.
