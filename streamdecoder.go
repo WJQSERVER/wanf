@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"reflect"
+	"strings"
 	"strconv"
 	"time"
 )
@@ -62,6 +63,7 @@ func (dec *StreamDecoder) Decode(v interface{}) error {
 
 // decodeBody 解码结构体的主体内容，处理顶层语句和块。
 func (dec *StreamDecoder) decodeBody(rv reflect.Value) error {
+	info := getOrCacheDecoderFields(rv.Type())
 	for {
 		// 将EOF检查放在循环顶部是更标准的做法，用于判断是否到达文件末尾
 		if dec.p.curTokenIs(EOF) {
@@ -78,11 +80,11 @@ func (dec *StreamDecoder) decodeBody(rv reflect.Value) error {
 			return fmt.Errorf("wanf: import statements are not supported in stream decoding mode (line %d)", dec.p.curToken.Line)
 		case IDENT: // 处理标识符
 			if dec.p.peekTokenIs(ASSIGN) { // 如果是赋值语句
-				if err := dec.decodeAssignStatement(rv); err != nil {
+				if err := dec.decodeAssignStatement(rv, info); err != nil {
 					return err
 				}
 			} else if dec.p.peekTokenIs(LBRACE) || dec.p.peekTokenIs(STRING) { // 如果是块语句（带或不带标签）
-				if err := dec.decodeBlockStatement(rv); err != nil {
+				if err := dec.decodeBlockStatement(rv, info); err != nil {
 					return err
 				}
 			} else { // 标识符后出现意外token
@@ -99,7 +101,7 @@ func (dec *StreamDecoder) decodeBody(rv reflect.Value) error {
 }
 
 // decodeAssignStatement 解码赋值语句。
-func (dec *StreamDecoder) decodeAssignStatement(rv reflect.Value) error {
+func (dec *StreamDecoder) decodeAssignStatement(rv reflect.Value, info *cachedDecoderInfo) error {
 	// 在所有nextToken()调用之前复制标识符名称
 	identName := string(dec.p.curToken.Literal)
 
@@ -115,22 +117,23 @@ func (dec *StreamDecoder) decodeAssignStatement(rv reflect.Value) error {
 		return err
 	}
 
-	// 查找结构体字段及其标签，使用identName的安全副本
-	field, tag, ok := findFieldAndTag(rv, identName)
+	cf, ok := info.fields[identName]
 	if !ok {
-		// 如果未找到字段，仍然需要消费token直到下一个语句
-		// 但evalExpressionOnTheFly已经完成了这一步，所以直接返回
-		return nil
+		cf, ok = info.lowerFields[strings.ToLower(identName)]
+		if !ok {
+			return nil
+		}
 	}
 
-	if tag.KeyField != "" { // 如果字段是map且指定了key字段
-		return dec.d.setMapFromList(field, val, tag.KeyField)
+	field := rv.Field(cf.Index)
+	if cf.Tag.KeyField != "" { // 如果字段是map且指定了key字段
+		return dec.d.setMapFromList(field, val, cf.Tag.KeyField)
 	}
 	return dec.d.setField(field, val) // 设置结构体字段值
 }
 
 // decodeBlockStatement 解码块语句，现在负责消费末尾的'}'。
-func (dec *StreamDecoder) decodeBlockStatement(rv reflect.Value) error {
+func (dec *StreamDecoder) decodeBlockStatement(rv reflect.Value, info *cachedDecoderInfo) error {
 	blockName := string(dec.p.curToken.Literal) // 块标识符名称
 	dec.p.nextToken()                           // 消费块名称
 
@@ -145,11 +148,15 @@ func (dec *StreamDecoder) decodeBlockStatement(rv reflect.Value) error {
 	}
 	dec.p.nextToken() // 消费'{'
 
-	// 查找结构体字段及其标签
-	field, _, ok := findFieldAndTag(rv, blockName)
+	cf, ok := info.fields[blockName]
 	if !ok {
-		return dec.skipBlock() // 如果未找到字段，则跳过整个块
+		cf, ok = info.lowerFields[strings.ToLower(blockName)]
+		if !ok {
+			return dec.skipBlock() // 如果未找到字段，则跳过整个块
+		}
 	}
+
+	field := rv.Field(cf.Index)
 
 	switch field.Kind() {
 	case reflect.Struct: // 如果字段是结构体类型
