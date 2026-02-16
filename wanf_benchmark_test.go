@@ -171,6 +171,7 @@ func BenchmarkStreamDecode(b *testing.B) {
 			b.Fatalf("NewStreamDecoder failed during benchmark: %v", err)
 		}
 		err = dec.Decode(&cfg)
+		dec.Close()
 		if err != nil {
 			b.Fatalf("Decode failed during benchmark: %v", err)
 		}
@@ -226,6 +227,7 @@ func BenchmarkStreamLexerDurationSingle(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		l := newStreamLexer(bytes.NewReader(input))
 		l.NextToken()
+		putStreamLexer(l)
 	}
 }
 
@@ -235,5 +237,6 @@ func BenchmarkStreamLexerDurationCompound(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		l := newStreamLexer(bytes.NewReader(input))
 		l.NextToken()
+		putStreamLexer(l)
 	}
 }

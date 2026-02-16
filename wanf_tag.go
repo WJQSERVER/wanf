@@ -22,8 +22,8 @@ func parseWanfTag(tagStr, fieldName string) wanfTag {
 	}
 	for _, part := range parts[1:] {
 		part = strings.TrimSpace(part)
-		if strings.HasPrefix(part, "key=") {
-			tag.KeyField = strings.TrimPrefix(part, "key=")
+		if after, ok := strings.CutPrefix(part, "key="); ok {
+			tag.KeyField = after
 		} else if part == "omitempty" {
 			tag.Omitempty = true
 		}

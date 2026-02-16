@@ -8,7 +8,7 @@ import (
 var singleCharByteSlices [256][]byte
 
 func init() {
-	for i := 0; i < 256; i++ {
+	for i := range 256 {
 		singleCharByteSlices[i] = []byte{byte(i)}
 	}
 }
@@ -207,12 +207,26 @@ func (l *Lexer) skipBytes(n int) {
 	}
 }
 func (l *Lexer) skipWhitespace() {
-	for l.ch == ' ' || l.ch == '\t' || l.ch == '\r' || l.ch == '\n' {
-		if l.ch == '\n' {
+	p := l.position
+	for p < len(l.input) {
+		ch := l.input[p]
+		if ch == ' ' || ch == '\t' || ch == '\r' {
+			p++
+			l.column++
+		} else if ch == '\n' {
+			p++
 			l.line++
 			l.column = 0
+		} else {
+			break
 		}
-		l.readChar()
+	}
+	l.position = p
+	l.readPosition = p + 1
+	if p >= len(l.input) {
+		l.ch = 0
+	} else {
+		l.ch = l.input[p]
 	}
 }
 func (l *Lexer) readSingleLineComment() []byte {
@@ -246,22 +260,48 @@ func (l *Lexer) readMultiLineComment() ([]byte, bool) {
 }
 
 func (l *Lexer) readIdentifier() []byte {
-	position := l.position
-	for isIdentifierChar(l.ch) {
-		l.readChar()
+	start := l.position
+	p := l.position
+	for p < len(l.input) && isIdentifierChar(l.input[p]) {
+		p++
 	}
-	return l.input[position:l.position]
+
+	n := p - start
+	l.position = p
+	l.readPosition = p + 1
+	l.column += n
+	if p >= len(l.input) {
+		l.ch = 0
+	} else {
+		l.ch = l.input[p]
+	}
+	return l.input[start:p]
 }
 func (l *Lexer) readNumber() []byte {
-	position := l.position
+	start := l.position
+	p := l.position
 	isFloat := false
-	for (l.ch >= '0' && l.ch <= '9') || (l.ch == '.' && !isFloat) {
-		if l.ch == '.' {
+	for p < len(l.input) {
+		ch := l.input[p]
+		if ch >= '0' && ch <= '9' {
+			p++
+		} else if ch == '.' && !isFloat {
 			isFloat = true
+			p++
+		} else {
+			break
 		}
-		l.readChar()
 	}
-	return l.input[position:l.position]
+	n := p - start
+	l.position = p
+	l.readPosition = p + 1
+	l.column += n
+	if p >= len(l.input) {
+		l.ch = 0
+	} else {
+		l.ch = l.input[p]
+	}
+	return l.input[start:p]
 }
 func (l *Lexer) readString() []byte {
 	quote := l.ch
@@ -312,9 +352,17 @@ func isIdentifierStart(ch byte) bool {
 	return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || ch == '_'
 }
 func isIdentifierChar(ch byte) bool {
+	// ASCII 快速路径
+	if (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_' {
+		return true
+	}
+	if ch < 128 {
+		return false
+	}
+
 	r := rune(ch) // 将byte转换为rune，以便使用unicode包的函数
 
-	if unicode.IsLetter(r) || unicode.IsDigit(r) || ch == '_' {
+	if unicode.IsLetter(r) || unicode.IsDigit(r) {
 		return true
 	}
 

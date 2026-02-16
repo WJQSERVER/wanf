@@ -1,15 +1,21 @@
 package wanf
 
 import (
+	"os"
 	"strings"
 	"testing"
 )
 
-// TestStreamDecoder_VarError tests that the decoder correctly returns an error
-// if a var statement is used in stream mode.
-func TestStreamDecoder_VarError(t *testing.T) {
-	wanfData := `var a = 1`
-	var cfg struct{}
+// TestStreamDecoder_VarSupport tests that the decoder correctly handles
+// var statements in stream mode.
+func TestStreamDecoder_VarSupport(t *testing.T) {
+	wanfData := `
+		var a = 123
+		val = ${a}
+	`
+	var cfg struct {
+		Val int `wanf:"val"`
+	}
 
 	r := strings.NewReader(wanfData)
 	decoder, err := NewStreamDecoder(r)
@@ -18,35 +24,44 @@ func TestStreamDecoder_VarError(t *testing.T) {
 	}
 
 	err = decoder.Decode(&cfg)
-	if err == nil {
-		t.Fatal("Expected an error for var statement, but got nil")
+	if err != nil {
+		t.Fatalf("Decode failed: %v", err)
 	}
 
-	expectedError := "var statements are not supported in stream decoding mode"
-	if !strings.Contains(err.Error(), expectedError) {
-		t.Errorf("Expected error to contain %q, but got: %v", expectedError, err)
+	if cfg.Val != 123 {
+		t.Errorf("Expected val=123, got %d", cfg.Val)
 	}
 }
 
-// TestStreamDecoder_ImportError tests that the decoder correctly returns an error
-// if an import statement is used in stream mode.
-func TestStreamDecoder_ImportError(t *testing.T) {
-	wanfData := `import "other.wanf"`
-	var cfg struct{}
+// TestStreamDecoder_ImportSupport tests that the decoder correctly handles
+// import statements in stream mode.
+func TestStreamDecoder_ImportSupport(t *testing.T) {
+	// Create a temporary file for import
+	importData := `imported_val = "hello"`
+	importFile := "test_import.wanf"
+	err := os.WriteFile(importFile, []byte(importData), 0644)
+	if err != nil {
+		t.Fatalf("Failed to create temporary file: %v", err)
+	}
+	defer os.Remove(importFile)
+
+	wanfData := `import "test_import.wanf"`
+	var cfg struct {
+		ImportedVal string `wanf:"imported_val"`
+	}
 
 	r := strings.NewReader(wanfData)
-	decoder, err := NewStreamDecoder(r)
+	decoder, err := NewStreamDecoder(r, WithBasePath("."))
 	if err != nil {
 		t.Fatalf("NewStreamDecoder failed: %v", err)
 	}
 
 	err = decoder.Decode(&cfg)
-	if err == nil {
-		t.Fatal("Expected an error for import statement, but got nil")
+	if err != nil {
+		t.Fatalf("Decode failed: %v", err)
 	}
 
-	expectedError := "import statements are not supported in stream decoding mode"
-	if !strings.Contains(err.Error(), expectedError) {
-		t.Errorf("Expected error to contain %q, but got: %v", expectedError, err)
+	if cfg.ImportedVal != "hello" {
+		t.Errorf("Expected imported_val='hello', got %q", cfg.ImportedVal)
 	}
 }

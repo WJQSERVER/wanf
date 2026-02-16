@@ -1,6 +1,12 @@
 package wanf
 
-import "unsafe"
+import (
+	"reflect"
+	"time"
+	"unsafe"
+)
+
+var durationType = reflect.TypeFor[time.Duration]()
 
 // StringToBytes 将字符串转换为字节切片, 不进行内存分配.
 // 更多详情, 请参见 https://github.com/golang/go/issues/53003#issuecomment-1140276077.

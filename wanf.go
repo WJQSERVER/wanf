@@ -37,7 +37,7 @@ func Format(program *RootNode, opts FormatOptions) []byte {
 	return out.Bytes()
 }
 
-func DecodeFile(path string, v interface{}) error {
+func DecodeFile(path string, v any) error {
 	f, err := os.Open(path)
 	if err != nil {
 		return err
@@ -50,14 +50,17 @@ func DecodeFile(path string, v interface{}) error {
 	return dec.Decode(v)
 }
 
-func Decode(data []byte, v interface{}) error {
+func Decode(data []byte, v any) error {
 	if len(data) == 0 {
 		return nil
 	}
-	dec, err := NewDecoder(bytes.NewReader(data))
-	if err != nil {
-		return err
-	}
+
+	// 使用池化的 StreamDecoder 逻辑
+	// 但我们希望使用高性能的 Lexer 而不是 streamLexer
+	l := NewLexer(data)
+	dec := newStreamDecoderInternal(l)
+	defer putStreamDecoder(dec)
+
 	return dec.Decode(v)
 }
 

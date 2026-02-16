@@ -4,12 +4,20 @@ import (
 	"bufio"
 	"bytes"
 	"io"
-	"unicode"
+	"sync"
 )
 
 // This file contains the stream-based lexer.
 
 var dot = []byte{'.'}
+
+var streamLexerPool = sync.Pool{
+	New: func() any {
+		return &streamLexer{
+			r: bufio.NewReader(bytes.NewReader([]byte{})),
+		}
+	},
+}
 
 // streamLexer 是一个从 io.Reader 读取数据的词法分析器.
 // 它使用 bufio.Reader 来实现高效的预读(peek)功能, 并使用两个交替的 bytes.Buffer 来实现零分配的词法单元字面量生成.
@@ -25,20 +33,33 @@ type streamLexer struct {
 
 // newStreamLexer creates a new stream-based lexer.
 func newStreamLexer(r io.Reader) *streamLexer {
-	l := &streamLexer{
-		r:       bufio.NewReader(r),
-		line:    1,
-		useBufA: true,
+	l := streamLexerPool.Get().(*streamLexer)
+	if r == nil {
+		r = bytes.NewReader([]byte{})
 	}
+	l.r.Reset(r)
+	l.ch = 0
+	l.line = 1
+	l.column = 0
+	l.bufA.Reset()
+	l.bufB.Reset()
+	l.useBufA = true
+
 	l.readChar()
 	return l
 }
 
+func putStreamLexer(l *streamLexer) {
+	l.r.Reset(bytes.NewReader([]byte{}))
+	streamLexerPool.Put(l)
+}
+
 func (l *streamLexer) readChar() {
-	var err error
-	l.ch, err = l.r.ReadByte()
+	b, err := l.r.ReadByte()
 	if err != nil {
 		l.ch = 0
+	} else {
+		l.ch = b
 	}
 	l.column++
 }
@@ -177,13 +198,14 @@ func (l *streamLexer) readDurationCompound(prefix []byte) []byte {
 	buf.Write(prefix)
 	for {
 		l.appendDurationSuffix(buf)
-		if !((l.ch >= '0' && l.ch <= '9') || l.ch == '.') {
-			break
+		// 检查下一个部分是否为持续时间的数字
+		if (l.ch >= '0' && l.ch <= '9') || l.ch == '.' {
+			if l.peekNextNumberHasUnit() {
+				l.appendNumber(buf)
+				continue
+			}
 		}
-		if !l.peekNextNumberHasUnit() {
-			break
-		}
-		l.appendNumber(buf)
+		break
 	}
 	return buf.Bytes()
 }
@@ -215,7 +237,8 @@ func (l *streamLexer) peekNextNumberHasUnit() bool {
 		return false
 	}
 
-	peek, _ := l.r.Peek(64)
+	// 减少 Peek 范围以提升性能, 通常持续时间的数字部分不会很长
+	peek, _ := l.r.Peek(16)
 	i := 0
 	for i < len(peek) {
 		c := peek[i]
@@ -244,10 +267,33 @@ func (l *streamLexer) peekNextNumberHasUnit() bool {
 }
 
 func (l *streamLexer) skipWhitespace() {
-	for l.ch == ' ' || l.ch == '\t' || l.ch == '\r' || l.ch == '\n' {
-		if l.ch == '\n' {
+	for {
+		if l.ch == ' ' || l.ch == '\t' || l.ch == '\r' {
+			l.column++
+		} else if l.ch == '\n' {
 			l.line++
 			l.column = 0
+		} else {
+			break
+		}
+
+		peek, _ := l.r.Peek(32)
+		i := 0
+		for i < len(peek) {
+			c := peek[i]
+			if c == ' ' || c == '\t' || c == '\r' {
+				l.column++
+				i++
+			} else if c == '\n' {
+				l.line++
+				l.column = 0
+				i++
+			} else {
+				break
+			}
+		}
+		if i > 0 {
+			l.r.Discard(i)
 		}
 		l.readChar()
 	}
@@ -293,8 +339,19 @@ func (l *streamLexer) readMultiLineComment() ([]byte, bool) {
 
 func (l *streamLexer) readIdentifier() []byte {
 	buf := l.activeBuffer()
-	for isIdentifierStart(l.ch) || unicode.IsDigit(rune(l.ch)) {
+	for isIdentifierChar(l.ch) {
 		buf.WriteByte(l.ch)
+		// 尝试批量读取以减少 readChar 调用
+		peek, _ := l.r.Peek(32)
+		i := 0
+		for i < len(peek) && isIdentifierChar(peek[i]) {
+			i++
+		}
+		if i > 0 {
+			buf.Write(peek[:i])
+			l.r.Discard(i)
+			l.column += i
+		}
 		l.readChar()
 	}
 	return buf.Bytes()
@@ -302,11 +359,34 @@ func (l *streamLexer) readIdentifier() []byte {
 
 func (l *streamLexer) appendNumber(buf *bytes.Buffer) {
 	isFloat := false
-	for (l.ch >= '0' && l.ch <= '9') || (l.ch == '.' && !isFloat) {
-		if l.ch == '.' {
-			isFloat = true
+	for {
+		if (l.ch >= '0' && l.ch <= '9') || (l.ch == '.' && !isFloat) {
+			if l.ch == '.' {
+				isFloat = true
+			}
+			buf.WriteByte(l.ch)
+		} else {
+			break
 		}
-		buf.WriteByte(l.ch)
+
+		peek, _ := l.r.Peek(32)
+		i := 0
+		for i < len(peek) {
+			c := peek[i]
+			if c >= '0' && c <= '9' {
+				i++
+			} else if c == '.' && !isFloat {
+				isFloat = true
+				i++
+			} else {
+				break
+			}
+		}
+		if i > 0 {
+			buf.Write(peek[:i])
+			l.r.Discard(i)
+			l.column += i
+		}
 		l.readChar()
 	}
 }
