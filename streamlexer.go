@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"io"
-	"unicode"
 )
 
 // This file contains the stream-based lexer.
@@ -293,7 +292,7 @@ func (l *streamLexer) readMultiLineComment() ([]byte, bool) {
 
 func (l *streamLexer) readIdentifier() []byte {
 	buf := l.activeBuffer()
-	for isIdentifierStart(l.ch) || unicode.IsDigit(rune(l.ch)) {
+	for isIdentifierChar(l.ch) {
 		buf.WriteByte(l.ch)
 		l.readChar()
 	}

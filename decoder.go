@@ -230,23 +230,18 @@ func (d *internalDecoder) decodeBlock(stmt *BlockStatement, rv reflect.Value) er
 				if field.IsNil() {
 					field.Set(reflect.MakeMap(mapType))
 				}
+				m, err := d.decodeBlockToMap(stmt.Body)
+				if err != nil {
+					return err
+				}
 				if stmt.Label == nil {
-					m, err := d.decodeBlockToMap(stmt.Body)
-					if err != nil {
-						return err
-					}
 					for k, v := range m {
 						field.SetMapIndex(reflect.ValueOf(k), reflect.ValueOf(v))
 					}
-					return nil
 				} else {
-					m, err := d.decodeBlockToMap(stmt.Body)
-					if err != nil {
-						return err
-					}
-					field.SetMapIndex(reflect.ValueOf(string(stmt.Label.Value)), reflect.ValueOf(m))
-					return nil
+					field.SetMapIndex(reflect.ValueOf(BytesToString(stmt.Label.Value)), reflect.ValueOf(m))
 				}
+				return nil
 			}
 		}
 		if stmt.Label == nil {
@@ -261,7 +256,7 @@ func (d *internalDecoder) decodeBlock(stmt *BlockStatement, rv reflect.Value) er
 		if err := d.decodeRoot(stmt.Body, newStruct); err != nil {
 			return err
 		}
-		mapVal.SetMapIndex(reflect.ValueOf(string(stmt.Label.Value)), newStruct)
+		mapVal.SetMapIndex(reflect.ValueOf(BytesToString(stmt.Label.Value)), newStruct)
 	}
 	return nil
 }
@@ -447,22 +442,22 @@ func (d *internalDecoder) evalExpression(expr Expression) (any, error) {
 	case *FloatLiteral:
 		return e.Value, nil
 	case *StringLiteral:
-		return string(e.Value), nil
+		return BytesToString(e.Value), nil
 	case *BoolLiteral:
 		return e.Value, nil
 	case *DurationLiteral:
-		return time.ParseDuration(string(e.Value))
+		return time.ParseDuration(BytesToString(e.Value))
 	case *VarExpression:
-		val, ok := d.vars[string(e.Name)]
+		val, ok := d.vars[BytesToString(e.Name)]
 		if !ok {
 			return nil, fmt.Errorf("variable %q is not defined", string(e.Name))
 		}
 		return val, nil
 	case *EnvExpression:
-		val, found := os.LookupEnv(string(e.Name.Value))
+		val, found := os.LookupEnv(BytesToString(e.Name.Value))
 		if !found {
 			if e.DefaultValue != nil {
-				return string(e.DefaultValue.Value), nil
+				return BytesToString(e.DefaultValue.Value), nil
 			}
 			return nil, fmt.Errorf("environment variable %q not set", string(e.Name.Value))
 		}
@@ -496,7 +491,7 @@ func (d *internalDecoder) decodeMapLiteralToMap(ml *MapLiteral) (map[string]any,
 		if err != nil {
 			return nil, err
 		}
-		m[string(assign.Name.Value)] = val
+		m[BytesToString(assign.Name.Value)] = val
 	}
 	return m, nil
 }
@@ -510,13 +505,13 @@ func (d *internalDecoder) decodeBlockToMap(body *RootNode) (map[string]any, erro
 			if err != nil {
 				return nil, err
 			}
-			m[string(s.Name.Value)] = val
+			m[BytesToString(s.Name.Value)] = val
 		case *BlockStatement:
 			nestedMap, err := d.decodeBlockToMap(s.Body)
 			if err != nil {
 				return nil, err
 			}
-			m[string(s.Name.Value)] = nestedMap
+			m[BytesToString(s.Name.Value)] = nestedMap
 		}
 	}
 	return m, nil
@@ -530,9 +525,40 @@ func findFieldAndTag(structVal reflect.Value, name string) (reflect.Value, wanfT
 		return structVal.Field(f.Index), f.Tag, true
 	}
 
-	lowerName := strings.ToLower(name)
-	if f, ok := info.lowerFields[lowerName]; ok {
-		return structVal.Field(f.Index), f.Tag, true
+	// 尝试不分配字符串的小写查找 (仅针对 ASCII)
+	var b []byte
+	var buf [64]byte
+	if len(name) <= 64 {
+		b = buf[:len(name)]
+	} else {
+		b = make([]byte, len(name))
+	}
+
+	isASCII := true
+	for i := 0; i < len(name); i++ {
+		if name[i] >= 128 {
+			isASCII = false
+			break
+		}
+	}
+
+	if isASCII {
+		for i := 0; i < len(name); i++ {
+			c := name[i]
+			if c >= 'A' && c <= 'Z' {
+				b[i] = c + ('a' - 'A')
+			} else {
+				b[i] = c
+			}
+		}
+		if f, ok := info.lowerFields[string(b)]; ok {
+			return structVal.Field(f.Index), f.Tag, true
+		}
+	} else {
+		lowerName := strings.ToLower(name)
+		if f, ok := info.lowerFields[lowerName]; ok {
+			return structVal.Field(f.Index), f.Tag, true
+		}
 	}
 
 	return reflect.Value{}, wanfTag{}, false
@@ -599,7 +625,7 @@ func (d *internalDecoder) decodeMapStringString(body *RootNode, mapField reflect
 		if !ok {
 			return fmt.Errorf("value for key %q in map must be a string", string(assign.Name.Value))
 		}
-		mapField.SetMapIndex(reflect.ValueOf(string(assign.Name.Value)), reflect.ValueOf(strVal))
+		mapField.SetMapIndex(reflect.ValueOf(BytesToString(assign.Name.Value)), reflect.ValueOf(strVal))
 	}
 	return nil
 }

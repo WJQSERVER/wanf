@@ -46,6 +46,13 @@ var mapEntrySlicePool = sync.Pool{
 	},
 }
 
+var stringSlicePool = sync.Pool{
+	New: func() any {
+		s := make([]string, 0, 8)
+		return &s
+	},
+}
+
 var streamEncoderPool = sync.Pool{
 	New: func() any {
 		return &streamInternalEncoder{}
@@ -56,8 +63,14 @@ func getEncoder() *internalEncoder {
 	return encoderPool.Get().(*internalEncoder)
 }
 
+const maxPoolSliceCap = 1024
+
 func putEncoder(e *internalEncoder) {
-	e.buf.Reset()
+	if e.buf.Cap() > maxPoolSliceCap {
+		e.buf = &bytes.Buffer{}
+	} else {
+		e.buf.Reset()
+	}
 	e.indent = 0
 	encoderPool.Put(e)
 }
@@ -406,7 +419,8 @@ func (e *internalEncoder) encodeMapStringString(m map[string]string, depth int) 
 		return
 	}
 
-	keys := make([]string, 0, len(m))
+	keysPtr := stringSlicePool.Get().(*[]string)
+	keys := (*keysPtr)[:0]
 	for k := range m {
 		keys = append(keys, k)
 	}
@@ -438,6 +452,10 @@ func (e *internalEncoder) encodeMapStringString(m map[string]string, depth int) 
 		e.writeIndent()
 	}
 	e.buf.WriteString("]}")
+	if cap(keys) <= maxPoolSliceCap {
+		*keysPtr = keys
+		stringSlicePool.Put(keysPtr)
+	}
 }
 
 func (e *internalEncoder) encodeSliceString(s []string, depth int) {
@@ -477,7 +495,8 @@ func (e *internalEncoder) encodeMapInterface(m map[string]any, depth int) {
 		return
 	}
 
-	keys := make([]string, 0, len(m))
+	keysPtr := stringSlicePool.Get().(*[]string)
+	keys := (*keysPtr)[:0]
 	for k := range m {
 		keys = append(keys, k)
 	}
@@ -509,6 +528,10 @@ func (e *internalEncoder) encodeMapInterface(m map[string]any, depth int) {
 		e.writeIndent()
 	}
 	e.buf.WriteString("]}")
+	if cap(keys) <= maxPoolSliceCap {
+		*keysPtr = keys
+		stringSlicePool.Put(keysPtr)
+	}
 }
 
 func (e *internalEncoder) encodeSliceInterface(s []any, depth int) {
@@ -602,8 +625,10 @@ func (e *internalEncoder) encodeMap(v reflect.Value, depth int) {
 	}
 	e.buf.WriteString("]}")
 
-	*entriesPtr = entries[:0]
-	mapEntrySlicePool.Put(entriesPtr)
+	if cap(entries) <= maxPoolSliceCap {
+		*entriesPtr = entries[:0]
+		mapEntrySlicePool.Put(entriesPtr)
+	}
 }
 
 func (e *internalEncoder) writeIndent() {
@@ -1009,7 +1034,8 @@ func (e *streamInternalEncoder) encodeMapStringString(m map[string]string, depth
 		return
 	}
 
-	keys := make([]string, 0, len(m))
+	keysPtr := stringSlicePool.Get().(*[]string)
+	keys := (*keysPtr)[:0]
 	for k := range m {
 		keys = append(keys, k)
 	}
@@ -1041,6 +1067,10 @@ func (e *streamInternalEncoder) encodeMapStringString(m map[string]string, depth
 		e.writeIndent()
 	}
 	e.writeString("]}")
+	if cap(keys) <= maxPoolSliceCap {
+		*keysPtr = keys
+		stringSlicePool.Put(keysPtr)
+	}
 }
 
 func (e *streamInternalEncoder) encodeSliceString(s []string, depth int) {
@@ -1086,7 +1116,8 @@ func (e *streamInternalEncoder) encodeMapInterface(m map[string]any, depth int) 
 		return
 	}
 
-	keys := make([]string, 0, len(m))
+	keysPtr := stringSlicePool.Get().(*[]string)
+	keys := (*keysPtr)[:0]
 	for k := range m {
 		keys = append(keys, k)
 	}
@@ -1118,6 +1149,10 @@ func (e *streamInternalEncoder) encodeMapInterface(m map[string]any, depth int) 
 		e.writeIndent()
 	}
 	e.writeString("]}")
+	if cap(keys) <= maxPoolSliceCap {
+		*keysPtr = keys
+		stringSlicePool.Put(keysPtr)
+	}
 }
 
 func (e *streamInternalEncoder) encodeSliceInterface(s []any, depth int) {
@@ -1217,8 +1252,10 @@ func (e *streamInternalEncoder) encodeMap(v reflect.Value, depth int) {
 	}
 	e.writeString("]}")
 
-	*entriesPtr = entries[:0]
-	mapEntrySlicePool.Put(entriesPtr)
+	if cap(entries) <= maxPoolSliceCap {
+		*entriesPtr = entries[:0]
+		mapEntrySlicePool.Put(entriesPtr)
+	}
 }
 
 func cacheStructInfo(t reflect.Type) *cachedStructInfo {
