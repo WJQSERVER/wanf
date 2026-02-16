@@ -62,13 +62,12 @@ func (e LintError) Error() string {
 }
 
 type Parser struct {
-	l              lexer
-	errors         []LintError
-	curToken       Token
-	peekToken      Token
-	prefixParseFns map[TokenType]prefixParseFn
-	LintMode       bool
-	lintErrors     []LintError
+	l          lexer
+	errors     []LintError
+	curToken   Token
+	peekToken  Token
+	LintMode   bool
+	lintErrors []LintError
 }
 
 func NewParser(l lexer) *Parser {
@@ -77,16 +76,6 @@ func NewParser(l lexer) *Parser {
 		errors:     []LintError{},
 		lintErrors: []LintError{},
 	}
-	p.prefixParseFns = make(map[TokenType]prefixParseFn)
-	p.registerPrefix(IDENT, p.parseIdentifier)
-	p.registerPrefix(INT, p.parseIntegerLiteral)
-	p.registerPrefix(FLOAT, p.parseFloatLiteral)
-	p.registerPrefix(STRING, p.parseStringLiteral)
-	p.registerPrefix(BOOL, p.parseBooleanLiteral)
-	p.registerPrefix(DUR, p.parseDurationLiteral)
-	p.registerPrefix(LBRACK, p.parseListLiteral)
-	p.registerPrefix(LBRACE, p.parseBlockOrMapLiteral)
-	p.registerPrefix(DOLLAR_LBRACE, p.parseVarExpression)
 	p.nextToken()
 	p.nextToken()
 	return p
@@ -268,12 +257,30 @@ func (p *Parser) parseImportStatement(leading []*Comment) *ImportStatement {
 }
 
 func (p *Parser) parseExpression(precedence int) Expression {
-	prefix := p.prefixParseFns[p.curToken.Type]
-	if prefix == nil {
+	var leftExp Expression
+	switch p.curToken.Type {
+	case IDENT:
+		leftExp = p.parseIdentifier()
+	case INT:
+		leftExp = p.parseIntegerLiteral()
+	case FLOAT:
+		leftExp = p.parseFloatLiteral()
+	case STRING:
+		leftExp = p.parseStringLiteral()
+	case BOOL:
+		leftExp = p.parseBooleanLiteral()
+	case DUR:
+		leftExp = p.parseDurationLiteral()
+	case LBRACK:
+		leftExp = p.parseListLiteral()
+	case LBRACE:
+		leftExp = p.parseBlockOrMapLiteral()
+	case DOLLAR_LBRACE:
+		leftExp = p.parseVarExpression()
+	default:
 		p.noPrefixParseFnError(p.curToken.Type)
 		return nil
 	}
-	leftExp := prefix()
 	return leftExp
 }
 
@@ -504,9 +511,6 @@ func (p *Parser) appendErrorAt(tok Token, msg string) {
 	})
 }
 
-func (p *Parser) registerPrefix(tokenType TokenType, fn prefixParseFn) {
-	p.prefixParseFns[tokenType] = fn
-}
 
 // logToken 是一个调试辅助函数, 用于打印当前的 token 信息.
 func (p *Parser) logToken(msg string) {

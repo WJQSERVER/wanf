@@ -261,6 +261,121 @@ func (d *internalDecoder) decodeBlock(stmt *BlockStatement, rv reflect.Value) er
 	return nil
 }
 
+func (d *internalDecoder) setInt(field reflect.Value, val int64) error {
+	if field.Kind() == reflect.Interface {
+		field.Set(reflect.ValueOf(val))
+		return nil
+	}
+	for field.Kind() == reflect.Pointer {
+		if field.IsNil() {
+			field.Set(reflect.New(field.Type().Elem()))
+		}
+		field = field.Elem()
+	}
+
+	switch field.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		field.SetInt(val)
+		return nil
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		field.SetUint(uint64(val))
+		return nil
+	case reflect.Float32, reflect.Float64:
+		field.SetFloat(float64(val))
+		return nil
+	}
+	return fmt.Errorf("cannot set %s to int64", field.Type())
+}
+
+func (d *internalDecoder) setFloat(field reflect.Value, val float64) error {
+	if field.Kind() == reflect.Interface {
+		field.Set(reflect.ValueOf(val))
+		return nil
+	}
+	for field.Kind() == reflect.Pointer {
+		if field.IsNil() {
+			field.Set(reflect.New(field.Type().Elem()))
+		}
+		field = field.Elem()
+	}
+
+	if field.Kind() == reflect.Float32 || field.Kind() == reflect.Float64 {
+		field.SetFloat(val)
+		return nil
+	}
+	return fmt.Errorf("cannot set %s to float64", field.Type())
+}
+
+func (d *internalDecoder) setBool(field reflect.Value, val bool) error {
+	if field.Kind() == reflect.Interface {
+		field.Set(reflect.ValueOf(val))
+		return nil
+	}
+	for field.Kind() == reflect.Pointer {
+		if field.IsNil() {
+			field.Set(reflect.New(field.Type().Elem()))
+		}
+		field = field.Elem()
+	}
+
+	if field.Kind() == reflect.Bool {
+		field.SetBool(val)
+		return nil
+	}
+	return fmt.Errorf("cannot set %s to bool", field.Type())
+}
+
+func (d *internalDecoder) setString(field reflect.Value, val string) error {
+	if field.Kind() == reflect.Interface {
+		field.Set(reflect.ValueOf(val))
+		return nil
+	}
+	for field.Kind() == reflect.Pointer {
+		if field.IsNil() {
+			field.Set(reflect.New(field.Type().Elem()))
+		}
+		field = field.Elem()
+	}
+
+	switch field.Kind() {
+	case reflect.String:
+		field.SetString(val)
+		return nil
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		if field.Type() == durationType {
+			dur, err := time.ParseDuration(val)
+			if err == nil {
+				field.SetInt(int64(dur))
+				return nil
+			}
+		}
+		i, err := strconv.ParseInt(val, 0, field.Type().Bits())
+		if err == nil {
+			field.SetInt(i)
+			return nil
+		}
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		i, err := strconv.ParseUint(val, 0, field.Type().Bits())
+		if err == nil {
+			field.SetUint(i)
+			return nil
+		}
+	case reflect.Float32, reflect.Float64:
+		f, err := strconv.ParseFloat(val, field.Type().Bits())
+		if err == nil {
+			field.SetFloat(f)
+			return nil
+		}
+	case reflect.Bool:
+		b, err := strconv.ParseBool(val)
+		if err == nil {
+			field.SetBool(b)
+			return nil
+		}
+	}
+	return fmt.Errorf("cannot set %s to string", field.Type())
+}
+
 func (d *internalDecoder) setField(field reflect.Value, val any) error {
 	if field.Kind() == reflect.Interface {
 		field.Set(reflect.ValueOf(val))
@@ -269,73 +384,23 @@ func (d *internalDecoder) setField(field reflect.Value, val any) error {
 	if !field.CanSet() {
 		return fmt.Errorf("cannot set field")
 	}
-	if field.Kind() == reflect.Pointer {
+
+	for field.Kind() == reflect.Pointer {
 		if field.IsNil() {
 			field.Set(reflect.New(field.Type().Elem()))
 		}
-		return d.setField(field.Elem(), val)
+		field = field.Elem()
 	}
 
 	switch v := val.(type) {
 	case string:
-		switch field.Kind() {
-		case reflect.String:
-			field.SetString(v)
-			return nil
-		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-			if field.Type() == reflect.TypeFor[time.Duration]() {
-				dur, err := time.ParseDuration(v)
-				if err == nil {
-					field.SetInt(int64(dur))
-					return nil
-				}
-			}
-			i, err := strconv.ParseInt(v, 0, field.Type().Bits())
-			if err == nil {
-				field.SetInt(i)
-				return nil
-			}
-		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-			i, err := strconv.ParseUint(v, 0, field.Type().Bits())
-			if err == nil {
-				field.SetUint(i)
-				return nil
-			}
-		case reflect.Float32, reflect.Float64:
-			f, err := strconv.ParseFloat(v, field.Type().Bits())
-			if err == nil {
-				field.SetFloat(f)
-				return nil
-			}
-		case reflect.Bool:
-			b, err := strconv.ParseBool(v)
-			if err == nil {
-				field.SetBool(b)
-				return nil
-			}
-		}
+		return d.setString(field, v)
 	case int64:
-		switch field.Kind() {
-		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-			field.SetInt(v)
-			return nil
-		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-			field.SetUint(uint64(v))
-			return nil
-		case reflect.Float32, reflect.Float64:
-			field.SetFloat(float64(v))
-			return nil
-		}
+		return d.setInt(field, v)
 	case float64:
-		if field.Kind() == reflect.Float32 || field.Kind() == reflect.Float64 {
-			field.SetFloat(v)
-			return nil
-		}
+		return d.setFloat(field, v)
 	case bool:
-		if field.Kind() == reflect.Bool {
-			field.SetBool(v)
-			return nil
-		}
+		return d.setBool(field, v)
 	case time.Duration:
 		if field.Type() == durationType {
 			field.SetInt(int64(v))
@@ -604,7 +669,22 @@ func (d *internalDecoder) decodeMapToStruct(sourceMap map[string]any, targetStru
 		if !ok {
 			continue
 		}
-		if err := d.setField(field, val); err != nil {
+
+		var err error
+		switch v := val.(type) {
+		case int64:
+			err = d.setInt(field, v)
+		case float64:
+			err = d.setFloat(field, v)
+		case string:
+			err = d.setString(field, v)
+		case bool:
+			err = d.setBool(field, v)
+		default:
+			err = d.setField(field, val)
+		}
+
+		if err != nil {
 			return fmt.Errorf("error setting field %q: %w", key, err)
 		}
 	}

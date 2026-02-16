@@ -171,6 +171,7 @@ func BenchmarkStreamDecode(b *testing.B) {
 			b.Fatalf("NewStreamDecoder failed during benchmark: %v", err)
 		}
 		err = dec.Decode(&cfg)
+		dec.Close()
 		if err != nil {
 			b.Fatalf("Decode failed during benchmark: %v", err)
 		}

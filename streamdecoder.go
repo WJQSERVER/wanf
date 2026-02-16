@@ -7,34 +7,74 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strconv"
+	"sync"
 	"time"
 )
 
 // StreamDecoder 结构体用于从输入流中解码WANF格式数据。
 type StreamDecoder struct {
-	d *internalDecoder // 内部解码器
-	p *Parser          // 语法解析器
+	d         *internalDecoder // 内部解码器
+	p         *Parser          // 语法解析器
+	processed map[string]bool  // 已处理的导入路径
+}
+
+var streamDecoderPool = sync.Pool{
+	New: func() any {
+		return &StreamDecoder{
+			d:         &internalDecoder{vars: make(map[string]any)},
+			processed: make(map[string]bool),
+		}
+	},
 }
 
 // NewStreamDecoder 创建并返回一个新的StreamDecoder实例。
 // 它接收一个io.Reader作为输入源，以及可选的DecoderOption配置选项。
 func NewStreamDecoder(r io.Reader, opts ...DecoderOption) (*StreamDecoder, error) {
-	d := &internalDecoder{vars: make(map[string]any)}
-	for _, opt := range opts {
-		opt(d)
-	}
-
 	l := newStreamLexer(r) // 创建流式词法分析器
-	p := NewParser(l)      // 创建语法解析器
+	return newStreamDecoderInternal(l, opts...), nil
+}
 
-	dec := &StreamDecoder{
-		d: d,
-		p: p,
+func newStreamDecoderInternal(l lexer, opts ...DecoderOption) *StreamDecoder {
+	dec := streamDecoderPool.Get().(*StreamDecoder)
+	// Reset internalDecoder
+	dec.d.basePath = ""
+	for k := range dec.d.vars {
+		delete(dec.d.vars, k)
+	}
+	for _, opt := range opts {
+		opt(dec.d)
 	}
 
-	return dec, nil
+	// Reset processed map
+	for k := range dec.processed {
+		delete(dec.processed, k)
+	}
+
+	if dec.p == nil {
+		dec.p = NewParser(l)
+	} else {
+		dec.p.l = l
+		dec.p.errors = dec.p.errors[:0]
+		dec.p.lintErrors = dec.p.lintErrors[:0]
+		dec.p.nextToken()
+		dec.p.nextToken()
+	}
+
+	return dec
+}
+
+func (dec *StreamDecoder) Close() {
+	if sl, ok := dec.p.l.(*streamLexer); ok {
+		putStreamLexer(sl)
+	}
+	streamDecoderPool.Put(dec)
+}
+
+func putStreamDecoder(dec *StreamDecoder) {
+	dec.Close()
 }
 
 // Decode 将输入流中的WANF数据解码到v指向的结构体中。
@@ -72,10 +112,14 @@ func (dec *StreamDecoder) decodeBody(rv reflect.Value) error {
 		case SEMICOLON, COMMENT: // 忽略分号和注释
 			dec.p.nextToken()
 			continue
-		case VAR: // 流式解码不支持var语句
-			return fmt.Errorf("wanf: var statements are not supported in stream decoding mode (line %d)", dec.p.curToken.Line)
-		case IMPORT: // 流式解码不支持import语句
-			return fmt.Errorf("wanf: import statements are not supported in stream decoding mode (line %d)", dec.p.curToken.Line)
+		case VAR: // 处理变量声明
+			if err := dec.decodeVarStatement(); err != nil {
+				return err
+			}
+		case IMPORT: // 处理导入
+			if err := dec.decodeImportStatement(rv); err != nil {
+				return err
+			}
 		case IDENT: // 处理标识符
 			if dec.p.peekTokenIs(ASSIGN) { // 如果是赋值语句
 				if err := dec.decodeAssignStatement(rv); err != nil {
@@ -98,10 +142,93 @@ func (dec *StreamDecoder) decodeBody(rv reflect.Value) error {
 	}
 }
 
+func (dec *StreamDecoder) decodeVarStatement() error {
+	dec.p.nextToken() // 消费 'var'
+	if !dec.p.curTokenIs(IDENT) {
+		return fmt.Errorf("wanf: expected identifier after 'var' on line %d", dec.p.curToken.Line)
+	}
+	varName := string(dec.p.curToken.Literal)
+	dec.p.nextToken()
+
+	if !dec.p.curTokenIs(ASSIGN) {
+		return fmt.Errorf("wanf: expected '=' after variable name %q", varName)
+	}
+	dec.p.nextToken()
+
+	val, err := dec.evalExpressionOnTheFly()
+	if err != nil {
+		return err
+	}
+	dec.d.vars[varName] = val
+	return nil
+}
+
+func (dec *StreamDecoder) decodeImportStatement(rv reflect.Value) error {
+	dec.p.nextToken() // 消费 'import'
+	if !dec.p.curTokenIs(STRING) {
+		return fmt.Errorf("wanf: expected string after 'import' on line %d", dec.p.curToken.Line)
+	}
+	importPath := string(dec.p.curToken.Literal)
+	dec.p.nextToken()
+
+	fullPath := filepath.Join(dec.d.basePath, importPath)
+	absPath, err := filepath.Abs(fullPath)
+	if err != nil {
+		return err
+	}
+
+	if dec.processed[absPath] {
+		return nil
+	}
+	dec.processed[absPath] = true
+
+	f, err := os.Open(absPath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	// 保存当前状态
+	oldLexer := dec.p.l
+	oldCur := dec.p.curToken
+	oldPeek := dec.p.peekToken
+	oldBasePath := dec.d.basePath
+
+	// 设置新状态
+	dec.d.basePath = filepath.Dir(absPath)
+	l := newStreamLexer(f)
+	defer putStreamLexer(l) // 修复泄漏
+	dec.p.l = l
+	dec.p.nextToken()
+	dec.p.nextToken()
+
+	err = dec.decodeBody(rv)
+
+	// 恢复状态
+	dec.d.basePath = oldBasePath
+	dec.p.l = oldLexer
+	dec.p.curToken = oldCur
+	dec.p.peekToken = oldPeek
+
+	if err != nil && err != io.EOF {
+		return err
+	}
+	return nil
+}
+
 // decodeAssignStatement 解码赋值语句。
 func (dec *StreamDecoder) decodeAssignStatement(rv reflect.Value) error {
 	// 在所有nextToken()调用之前复制标识符名称
-	identName := string(dec.p.curToken.Literal)
+	// 注意：对于 streamLexer，我们需要复制它，因为随后的 nextToken() 可能会覆盖缓冲区。
+	var identName string
+	identLiteral := dec.p.curToken.Literal
+	var nameBuf [64]byte
+	if len(identLiteral) <= 64 {
+		copy(nameBuf[:], identLiteral)
+		identName = BytesToString(nameBuf[:len(identLiteral)])
+	} else {
+		identName = string(identLiteral)
+	}
 
 	dec.p.nextToken()              // 消费标识符
 	if !dec.p.curTokenIs(ASSIGN) { // 更安全的检查方式：确保当前token是赋值符号
@@ -109,30 +236,159 @@ func (dec *StreamDecoder) decodeAssignStatement(rv reflect.Value) error {
 	}
 	dec.p.nextToken() // 消费赋值符号
 
-	// 实时评估表达式的值
-	val, err := dec.evalExpressionOnTheFly()
-	if err != nil {
+	// 查找结构体字段及其标签
+	field, tag, ok := findFieldAndTag(rv, identName)
+	if !ok {
+		// 如果未找到字段，仍然需要消费token
+		_, err := dec.evalExpressionOnTheFly()
 		return err
 	}
 
-	// 查找结构体字段及其标签，使用identName的安全副本
-	field, tag, ok := findFieldAndTag(rv, identName)
-	if !ok {
-		// 如果未找到字段，仍然需要消费token直到下一个语句
-		// 但evalExpressionOnTheFly已经完成了这一步，所以直接返回
-		return nil
-	}
-
-	if tag.KeyField != "" { // 如果字段是map且指定了key字段
+	if tag.KeyField != "" {
+		val, err := dec.evalExpressionOnTheFly()
+		if err != nil {
+			return err
+		}
 		return dec.d.setMapFromList(field, val, tag.KeyField)
 	}
-	return dec.d.setField(field, val) // 设置结构体字段值
+
+	return dec.decodeValueTo(field)
+}
+
+func (dec *StreamDecoder) decodeValueTo(field reflect.Value) error {
+	if field.Kind() == reflect.Pointer {
+		if field.IsNil() {
+			field.Set(reflect.New(field.Type().Elem()))
+		}
+		return dec.decodeValueTo(field.Elem())
+	}
+
+	switch dec.p.curToken.Type {
+	case INT:
+		val, err := strconv.ParseInt(BytesToString(dec.p.curToken.Literal), 0, 64)
+		if err != nil {
+			return err
+		}
+		dec.p.nextToken()
+		return dec.d.setInt(field, val)
+	case FLOAT:
+		val, err := strconv.ParseFloat(BytesToString(dec.p.curToken.Literal), 64)
+		if err != nil {
+			return err
+		}
+		dec.p.nextToken()
+		return dec.d.setFloat(field, val)
+	case STRING:
+		val := string(dec.p.curToken.Literal)
+		dec.p.nextToken()
+		return dec.d.setString(field, val)
+	case BOOL:
+		val, err := strconv.ParseBool(BytesToString(dec.p.curToken.Literal))
+		if err != nil {
+			return err
+		}
+		dec.p.nextToken()
+		return dec.d.setBool(field, val)
+	case DUR:
+		val, err := time.ParseDuration(BytesToString(dec.p.curToken.Literal))
+		if err != nil {
+			return err
+		}
+		dec.p.nextToken()
+		return dec.d.setField(field, val)
+	case DOLLAR_LBRACE:
+		val, err := dec.evalVarExpressionOnTheFly()
+		if err != nil {
+			return err
+		}
+		return dec.d.setField(field, val)
+	case IDENT:
+		if bytes.Equal(dec.p.curToken.Literal, []byte("env")) {
+			val, err := dec.evalEnvExpressionOnTheFly()
+			if err != nil {
+				return err
+			}
+			return dec.d.setField(field, val)
+		}
+		// 如果是其他标识符且目标是接口，报错或按需处理
+		return fmt.Errorf("wanf: unexpected identifier %q in expression on line %d", dec.p.curToken.Literal, dec.p.curToken.Line)
+	case LBRACK:
+		if field.Kind() == reflect.Slice {
+			return dec.decodeListToSlice(field)
+		}
+		val, err := dec.decodeListLiteralOnTheFly()
+		if err != nil {
+			return err
+		}
+		return dec.d.setField(field, val)
+	case LBRACE:
+		if dec.p.peekTokenIs(LBRACK) {
+			val, err := dec.decodeMapLiteralOnTheFly()
+			if err != nil {
+				return err
+			}
+			return dec.d.setField(field, val)
+		}
+		if field.Kind() == reflect.Struct {
+			dec.p.nextToken() // {
+			err := dec.decodeBody(field)
+			if err != nil && err != io.EOF {
+				return err
+			}
+			if !dec.p.curTokenIs(RBRACE) {
+				return fmt.Errorf("wanf: expected '}' after block on line %d", dec.p.curToken.Line)
+			}
+			dec.p.nextToken()
+			return nil
+		}
+		val, err := dec.decodeBlockLiteralOnTheFly()
+		if err != nil {
+			return err
+		}
+		return dec.d.setField(field, val)
+	}
+
+	return fmt.Errorf("wanf: unexpected token %s for field of type %s", dec.p.curToken.Type, field.Type())
+}
+
+func (dec *StreamDecoder) decodeListToSlice(field reflect.Value) error {
+	dec.p.nextToken() // [
+	elemType := field.Type().Elem()
+	slice := field
+	for !dec.p.curTokenIs(RBRACK) && !dec.p.curTokenIs(EOF) {
+		newElem := reflect.New(elemType).Elem()
+		if err := dec.decodeValueTo(newElem); err != nil {
+			return err
+		}
+		slice = reflect.Append(slice, newElem)
+
+		if dec.p.curTokenIs(COMMA) {
+			dec.p.nextToken()
+		} else if !dec.p.curTokenIs(RBRACK) {
+			return fmt.Errorf("wanf: expected comma or ']' in list")
+		}
+	}
+	if !dec.p.curTokenIs(RBRACK) {
+		return fmt.Errorf("wanf: unclosed list")
+	}
+	field.Set(slice)
+	dec.p.nextToken()
+	return nil
 }
 
 // decodeBlockStatement 解码块语句，现在负责消费末尾的'}'。
 func (dec *StreamDecoder) decodeBlockStatement(rv reflect.Value) error {
-	blockName := string(dec.p.curToken.Literal) // 块标识符名称
-	dec.p.nextToken()                           // 消费块名称
+	var blockName string
+	blockLiteral := dec.p.curToken.Literal
+	var nameBuf [64]byte
+	if len(blockLiteral) <= 64 {
+		copy(nameBuf[:], blockLiteral)
+		blockName = BytesToString(nameBuf[:len(blockLiteral)])
+	} else {
+		blockName = string(blockLiteral)
+	}
+
+	dec.p.nextToken() // 消费块名称
 
 	var label string
 	if dec.p.curTokenIs(STRING) { // 如果块带有字符串标签
@@ -220,6 +476,8 @@ func (dec *StreamDecoder) evalExpressionOnTheFly() (any, error) {
 		val, err = strconv.ParseBool(BytesToString(dec.p.curToken.Literal))
 	case DUR: // 时间段 (duration)
 		val, err = time.ParseDuration(BytesToString(dec.p.curToken.Literal))
+	case DOLLAR_LBRACE:
+		return dec.evalVarExpressionOnTheFly()
 	case IDENT: // 标识符
 		if bytes.Equal(dec.p.curToken.Literal, []byte("env")) { // 如果是env()函数调用
 			return dec.evalEnvExpressionOnTheFly()
@@ -242,6 +500,25 @@ func (dec *StreamDecoder) evalExpressionOnTheFly() (any, error) {
 	}
 	// 核心修正: 对于简单的字面量，在返回前消费掉其token
 	dec.p.nextToken()
+	return val, nil
+}
+
+func (dec *StreamDecoder) evalVarExpressionOnTheFly() (any, error) {
+	dec.p.nextToken() // ${
+	if !dec.p.curTokenIs(IDENT) {
+		return nil, fmt.Errorf("wanf: expected identifier in variable expression")
+	}
+	varName := string(dec.p.curToken.Literal)
+	dec.p.nextToken()
+	if !dec.p.curTokenIs(RBRACE) {
+		return nil, fmt.Errorf("wanf: expected '}' in variable expression")
+	}
+	dec.p.nextToken()
+
+	val, ok := dec.d.vars[varName]
+	if !ok {
+		return nil, fmt.Errorf("wanf: variable %q not defined", varName)
+	}
 	return val, nil
 }
 
