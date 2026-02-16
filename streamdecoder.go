@@ -219,16 +219,8 @@ func (dec *StreamDecoder) decodeImportStatement(rv reflect.Value) error {
 // decodeAssignStatement 解码赋值语句。
 func (dec *StreamDecoder) decodeAssignStatement(rv reflect.Value) error {
 	// 在所有nextToken()调用之前复制标识符名称
-	// 注意：对于 streamLexer，我们需要复制它，因为随后的 nextToken() 可能会覆盖缓冲区。
-	var identName string
-	identLiteral := dec.p.curToken.Literal
-	var nameBuf [64]byte
-	if len(identLiteral) <= 64 {
-		copy(nameBuf[:], identLiteral)
-		identName = BytesToString(nameBuf[:len(identLiteral)])
-	} else {
-		identName = string(identLiteral)
-	}
+	// 注意：对于 streamLexer，我们需要使用 string() 进行硬拷贝，因为随后的 nextToken() 可能会覆盖缓冲区。
+	identName := string(dec.p.curToken.Literal)
 
 	dec.p.nextToken()              // 消费标识符
 	if !dec.p.curTokenIs(ASSIGN) { // 更安全的检查方式：确保当前token是赋值符号
@@ -378,15 +370,7 @@ func (dec *StreamDecoder) decodeListToSlice(field reflect.Value) error {
 
 // decodeBlockStatement 解码块语句，现在负责消费末尾的'}'。
 func (dec *StreamDecoder) decodeBlockStatement(rv reflect.Value) error {
-	var blockName string
-	blockLiteral := dec.p.curToken.Literal
-	var nameBuf [64]byte
-	if len(blockLiteral) <= 64 {
-		copy(nameBuf[:], blockLiteral)
-		blockName = BytesToString(nameBuf[:len(blockLiteral)])
-	} else {
-		blockName = string(blockLiteral)
-	}
+	blockName := string(dec.p.curToken.Literal)
 
 	dec.p.nextToken() // 消费块名称
 

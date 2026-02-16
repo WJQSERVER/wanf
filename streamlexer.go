@@ -198,13 +198,14 @@ func (l *streamLexer) readDurationCompound(prefix []byte) []byte {
 	buf.Write(prefix)
 	for {
 		l.appendDurationSuffix(buf)
-		if !((l.ch >= '0' && l.ch <= '9') || l.ch == '.') {
-			break
+		// 检查下一个部分是否为持续时间的数字
+		if (l.ch >= '0' && l.ch <= '9') || l.ch == '.' {
+			if l.peekNextNumberHasUnit() {
+				l.appendNumber(buf)
+				continue
+			}
 		}
-		if !l.peekNextNumberHasUnit() {
-			break
-		}
-		l.appendNumber(buf)
+		break
 	}
 	return buf.Bytes()
 }
@@ -236,7 +237,8 @@ func (l *streamLexer) peekNextNumberHasUnit() bool {
 		return false
 	}
 
-	peek, _ := l.r.Peek(64)
+	// 减少 Peek 范围以提升性能, 通常持续时间的数字部分不会很长
+	peek, _ := l.r.Peek(16)
 	i := 0
 	for i < len(peek) {
 		c := peek[i]

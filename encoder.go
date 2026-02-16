@@ -14,7 +14,6 @@ import (
 	"unicode/utf8"
 )
 
-var durationType = reflect.TypeFor[time.Duration]()
 
 var encoderPool = sync.Pool{
 	New: func() any {

@@ -227,6 +227,7 @@ func BenchmarkStreamLexerDurationSingle(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		l := newStreamLexer(bytes.NewReader(input))
 		l.NextToken()
+		putStreamLexer(l)
 	}
 }
 
@@ -236,5 +237,6 @@ func BenchmarkStreamLexerDurationCompound(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		l := newStreamLexer(bytes.NewReader(input))
 		l.NextToken()
+		putStreamLexer(l)
 	}
 }
