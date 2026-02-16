@@ -22,6 +22,11 @@ type decoderCachedField struct {
 	FieldTyp reflect.StructField
 }
 
+type cachedDecoderInfo struct {
+	fields      map[string]decoderCachedField
+	lowerFields map[string]decoderCachedField
+}
+
 type DecoderOption func(*internalDecoder)
 
 func WithBasePath(path string) DecoderOption {
@@ -111,12 +116,13 @@ func processImports(stmts []Statement, basePath string, processed map[string]boo
 	return finalStmts, nil
 }
 
-func getOrCacheDecoderFields(typ reflect.Type) map[string]decoderCachedField {
+func getOrCacheDecoderFields(typ reflect.Type) *cachedDecoderInfo {
 	if cached, ok := decoderFieldCache.Load(typ); ok {
-		return cached.(map[string]decoderCachedField)
+		return cached.(*cachedDecoderInfo)
 	}
 
 	fields := make(map[string]decoderCachedField)
+	lowerFields := make(map[string]decoderCachedField)
 	for i := 0; i < typ.NumField(); i++ {
 		field := typ.Field(i)
 		if field.PkgPath != "" {
@@ -126,25 +132,28 @@ func getOrCacheDecoderFields(typ reflect.Type) map[string]decoderCachedField {
 		tagStr := field.Tag.Get("wanf")
 		tag := parseWanfTag(tagStr, field.Name)
 
-		fields[tag.Name] = decoderCachedField{
+		cf := decoderCachedField{
 			Index:    i,
 			Tag:      tag,
 			FieldTyp: field,
 		}
+		fields[tag.Name] = cf
+		lowerFields[strings.ToLower(tag.Name)] = cf
 
 		if tagStr == "" {
 			if _, exists := fields[field.Name]; !exists {
-				fields[field.Name] = decoderCachedField{
-					Index:    i,
-					Tag:      tag,
-					FieldTyp: field,
-				}
+				fields[field.Name] = cf
+				lowerFields[strings.ToLower(field.Name)] = cf
 			}
 		}
 	}
 
-	decoderFieldCache.Store(typ, fields)
-	return fields
+	info := &cachedDecoderInfo{
+		fields:      fields,
+		lowerFields: lowerFields,
+	}
+	decoderFieldCache.Store(typ, info)
+	return info
 }
 
 func (dec *Decoder) Decode(v interface{}) error {
@@ -164,14 +173,45 @@ func (d *internalDecoder) decodeRoot(root *RootNode, rv reflect.Value) error {
 	if rv.Kind() != reflect.Struct {
 		return fmt.Errorf("can only decode root into a struct, got %s", rv.Kind())
 	}
+
+	info := getOrCacheDecoderFields(rv.Type())
+
 	for _, stmt := range root.Statements {
 		switch s := stmt.(type) {
 		case *AssignStatement:
-			if err := d.decodeAssign(s, rv); err != nil {
+			name := BytesToString(s.Name.Value)
+			cf, ok := info.fields[name]
+			if !ok {
+				cf, ok = info.lowerFields[strings.ToLower(name)]
+				if !ok {
+					continue
+				}
+			}
+			field := rv.Field(cf.Index)
+			val, err := d.evalExpression(s.Value)
+			if err != nil {
+				return err
+			}
+			if cf.Tag.KeyField != "" {
+				if err := d.setMapFromList(field, val, cf.Tag.KeyField); err != nil {
+					return err
+				}
+				continue
+			}
+			if err := d.setField(field, val); err != nil {
 				return err
 			}
 		case *BlockStatement:
-			if err := d.decodeBlock(s, rv); err != nil {
+			name := BytesToString(s.Name.Value)
+			cf, ok := info.fields[name]
+			if !ok {
+				cf, ok = info.lowerFields[strings.ToLower(name)]
+				if !ok {
+					continue
+				}
+			}
+			field := rv.Field(cf.Index)
+			if err := d.decodeBlockWithField(s, field); err != nil {
 				return err
 			}
 		}
@@ -179,26 +219,7 @@ func (d *internalDecoder) decodeRoot(root *RootNode, rv reflect.Value) error {
 	return nil
 }
 
-func (d *internalDecoder) decodeAssign(stmt *AssignStatement, rv reflect.Value) error {
-	field, tag, ok := findFieldAndTag(rv, stmt.Name.Value)
-	if !ok {
-		return nil
-	}
-	val, err := d.evalExpression(stmt.Value)
-	if err != nil {
-		return err
-	}
-	if tag.KeyField != "" {
-		return d.setMapFromList(field, val, tag.KeyField)
-	}
-	return d.setField(field, val)
-}
-
-func (d *internalDecoder) decodeBlock(stmt *BlockStatement, rv reflect.Value) error {
-	field, _, ok := findFieldAndTag(rv, stmt.Name.Value)
-	if !ok {
-		return nil
-	}
+func (d *internalDecoder) decodeBlockWithField(stmt *BlockStatement, field reflect.Value) error {
 	if field.Kind() == reflect.Ptr && field.Type().Elem().Kind() == reflect.Struct {
 		if field.IsNil() {
 			field.Set(reflect.New(field.Type().Elem()))
@@ -210,11 +231,35 @@ func (d *internalDecoder) decodeBlock(stmt *BlockStatement, rv reflect.Value) er
 	}
 	if field.Kind() == reflect.Map {
 		mapType := field.Type()
-		if mapType.Key().Kind() == reflect.String && mapType.Elem().Kind() == reflect.String {
-			if field.IsNil() {
-				field.Set(reflect.MakeMap(mapType))
+		if mapType.Key().Kind() == reflect.String {
+			if mapType.Elem().Kind() == reflect.String {
+				if field.IsNil() {
+					field.Set(reflect.MakeMap(mapType))
+				}
+				return d.decodeMapStringString(stmt.Body, field)
 			}
-			return d.decodeMapStringString(stmt.Body, field)
+			if mapType.Elem().Kind() == reflect.Interface {
+				if field.IsNil() {
+					field.Set(reflect.MakeMap(mapType))
+				}
+				if stmt.Label == nil {
+					m, err := d.decodeBlockToMap(stmt.Body)
+					if err != nil {
+						return err
+					}
+					for k, v := range m {
+						field.SetMapIndex(reflect.ValueOf(k), reflect.ValueOf(v))
+					}
+					return nil
+				} else {
+					m, err := d.decodeBlockToMap(stmt.Body)
+					if err != nil {
+						return err
+					}
+					field.SetMapIndex(reflect.ValueOf(string(stmt.Label.Value)), reflect.ValueOf(m))
+					return nil
+				}
+			}
 		}
 		if stmt.Label == nil {
 			return fmt.Errorf("block %q is for a map, but is missing a label", string(stmt.Name.Value))
@@ -234,9 +279,11 @@ func (d *internalDecoder) decodeBlock(stmt *BlockStatement, rv reflect.Value) er
 }
 
 func (d *internalDecoder) setField(field reflect.Value, val interface{}) error {
-	if !field.CanSet() {
-		return fmt.Errorf("cannot set field")
+	if field.Kind() == reflect.Interface {
+		field.Set(reflect.ValueOf(val))
+		return nil
 	}
+
 	if field.Kind() == reflect.Ptr {
 		if field.IsNil() {
 			field.Set(reflect.New(field.Type().Elem()))
@@ -244,120 +291,179 @@ func (d *internalDecoder) setField(field reflect.Value, val interface{}) error {
 		return d.setField(field.Elem(), val)
 	}
 
-	v := reflect.ValueOf(val)
-
-	if v.Kind() == reflect.String {
-		s := v.String()
-		switch field.Kind() {
-		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-			if field.Type() == reflect.TypeOf(time.Duration(0)) {
-				dur, err := time.ParseDuration(s)
+	// 基于 reflect.Value 的 switch (反射less改进)
+	fk := field.Kind()
+	switch fk {
+	case reflect.String:
+		if v, ok := val.(string); ok {
+			field.SetString(v)
+			return nil
+		}
+	case reflect.Int, reflect.Int64, reflect.Int32, reflect.Int16, reflect.Int8:
+		if field.Type() == durationType {
+			switch v := val.(type) {
+			case time.Duration:
+				field.SetInt(int64(v))
+				return nil
+			case string:
+				dur, err := time.ParseDuration(v)
 				if err == nil {
 					field.SetInt(int64(dur))
 					return nil
 				}
 			}
-			i, err := strconv.ParseInt(s, 0, field.Type().Bits())
+		}
+		switch v := val.(type) {
+		case int64:
+			field.SetInt(v)
+			return nil
+		case string:
+			i, err := strconv.ParseInt(v, 0, field.Type().Bits())
 			if err == nil {
 				field.SetInt(i)
 				return nil
 			}
-		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-			i, err := strconv.ParseUint(s, 0, field.Type().Bits())
-			if err == nil {
-				field.SetUint(i)
-				return nil
-			}
-		case reflect.Float32, reflect.Float64:
-			f, err := strconv.ParseFloat(s, field.Type().Bits())
-			if err == nil {
-				field.SetFloat(f)
-				return nil
-			}
-		case reflect.Bool:
-			b, err := strconv.ParseBool(s)
+		}
+	case reflect.Bool:
+		switch v := val.(type) {
+		case bool:
+			field.SetBool(v)
+			return nil
+		case string:
+			b, err := strconv.ParseBool(v)
 			if err == nil {
 				field.SetBool(b)
 				return nil
 			}
 		}
+	case reflect.Float64, reflect.Float32:
+		switch v := val.(type) {
+		case float64:
+			field.SetFloat(v)
+			return nil
+		case int64:
+			field.SetFloat(float64(v))
+			return nil
+		case string:
+			f, err := strconv.ParseFloat(v, field.Type().Bits())
+			if err == nil {
+				field.SetFloat(f)
+				return nil
+			}
+		}
+	case reflect.Uint, reflect.Uint64, reflect.Uint32, reflect.Uint16, reflect.Uint8:
+		switch v := val.(type) {
+		case int64:
+			field.SetUint(uint64(v))
+			return nil
+		case string:
+			i, err := strconv.ParseUint(v, 0, field.Type().Bits())
+			if err == nil {
+				field.SetUint(i)
+				return nil
+			}
+		}
+	case reflect.Slice:
+		if v, ok := val.([]interface{}); ok {
+			return d.setSliceField(field, v)
+		}
+	case reflect.Map:
+		if v, ok := val.(map[string]interface{}); ok {
+			return d.setMapField(field, v)
+		}
 	}
 
-	if v.Type().ConvertibleTo(field.Type()) {
-		field.Set(v.Convert(field.Type()))
+	rv := reflect.ValueOf(val)
+	if rv.Type().ConvertibleTo(field.Type()) {
+		field.Set(rv.Convert(field.Type()))
 		return nil
-	}
-	if field.Kind() == reflect.Map && v.Kind() == reflect.Map {
-		return d.setMapField(field, v)
-	}
-	if field.Kind() == reflect.Slice && v.Kind() == reflect.Slice {
-		return d.setSliceField(field, v)
 	}
 	return fmt.Errorf("cannot set field of type %s with value of type %T", field.Type(), val)
 }
 
-func (d *internalDecoder) setMapField(field, v reflect.Value) error {
+func (d *internalDecoder) setMapField(field reflect.Value, val interface{}) error {
+	m, ok := val.(map[string]interface{})
+	if !ok {
+		rv := reflect.ValueOf(val)
+		if rv.Kind() != reflect.Map {
+			return fmt.Errorf("cannot set non-map to map field")
+		}
+		field.Set(rv)
+		return nil
+	}
+
 	mapType := field.Type()
 	if field.IsNil() {
 		field.Set(reflect.MakeMap(mapType))
 	}
 	elemType := mapType.Elem()
 
-	for _, key := range v.MapKeys() {
-		val := v.MapIndex(key).Interface()
-		valV := reflect.ValueOf(val)
+	// 优化 map[string]any (反射less)
+	if mapType.Key().Kind() == reflect.String && elemType.Kind() == reflect.Interface {
+		field.Set(reflect.ValueOf(m))
+		return nil
+	}
 
+	for k, v := range m {
+		keyV := reflect.ValueOf(k)
 		if elemType.Kind() == reflect.Struct {
-			if elemType.NumField() == 0 {
-				field.SetMapIndex(key, reflect.New(elemType).Elem())
-				continue
-			}
-
-			sourceMap, ok := val.(map[string]interface{})
+			sourceMap, ok := v.(map[string]interface{})
 			if !ok {
-				return fmt.Errorf("value for struct map must be a map object, got %T", val)
+				return fmt.Errorf("value for struct map must be a map object, got %T", v)
 			}
 			newStruct := reflect.New(elemType).Elem()
 			if err := d.decodeMapToStruct(sourceMap, newStruct); err != nil {
 				return err
 			}
-			field.SetMapIndex(key, newStruct)
+			field.SetMapIndex(keyV, newStruct)
 			continue
 		}
 
-		if valV.Type().ConvertibleTo(elemType) {
-			field.SetMapIndex(key, valV.Convert(elemType))
-			continue
+		newElem := reflect.New(elemType).Elem()
+		if err := d.setField(newElem, v); err != nil {
+			return err
 		}
-
-		return fmt.Errorf("cannot convert map value %v to %s", val, elemType)
+		field.SetMapIndex(keyV, newElem)
 	}
 	return nil
 }
 
-func (d *internalDecoder) setSliceField(field, v reflect.Value) error {
+func (d *internalDecoder) setSliceField(field reflect.Value, val interface{}) error {
+	s, ok := val.([]interface{})
+	if !ok {
+		rv := reflect.ValueOf(val)
+		if rv.Kind() != reflect.Slice {
+			return fmt.Errorf("cannot set non-slice to slice field")
+		}
+		field.Set(rv)
+		return nil
+	}
+
 	sliceType := field.Type()
 	elemType := sliceType.Elem()
-	newSlice := reflect.MakeSlice(sliceType, v.Len(), v.Len())
-	for i := 0; i < v.Len(); i++ {
-		val := v.Index(i).Interface()
 
+	// 优化 []any (反射less)
+	if elemType.Kind() == reflect.Interface {
+		field.Set(reflect.ValueOf(s))
+		return nil
+	}
+
+	newSlice := reflect.MakeSlice(sliceType, len(s), len(s))
+	for i, v := range s {
+		elem := newSlice.Index(i)
 		if elemType.Kind() == reflect.Struct {
-			if sourceMap, ok := val.(map[string]interface{}); ok {
+			if sourceMap, ok := v.(map[string]interface{}); ok {
 				newStruct := reflect.New(elemType).Elem()
 				if err := d.decodeMapToStruct(sourceMap, newStruct); err != nil {
 					return err
 				}
-				newSlice.Index(i).Set(newStruct)
+				elem.Set(newStruct)
 				continue
 			}
 		}
 
-		valV := reflect.ValueOf(val)
-		if valV.Type().ConvertibleTo(elemType) {
-			newSlice.Index(i).Set(valV.Convert(elemType))
-		} else {
-			return fmt.Errorf("cannot convert slice element of type %T to %s", val, elemType)
+		if err := d.setField(elem, v); err != nil {
+			return fmt.Errorf("at index %d: %w", i, err)
 		}
 	}
 	field.Set(newSlice)
@@ -446,20 +552,17 @@ func (d *internalDecoder) decodeBlockToMap(body *RootNode) (map[string]interface
 	return m, nil
 }
 
-func findFieldAndTag(structVal reflect.Value, name []byte) (reflect.Value, wanfTag, bool) {
+func findFieldAndTag(structVal reflect.Value, name string) (reflect.Value, wanfTag, bool) {
 	typ := structVal.Type()
-	cachedFields := getOrCacheDecoderFields(typ)
+	info := getOrCacheDecoderFields(typ)
 
-	sName := string(name)
-	if f, ok := cachedFields[sName]; ok {
+	if f, ok := info.fields[name]; ok {
 		return structVal.Field(f.Index), f.Tag, true
 	}
 
-	lowerName := strings.ToLower(sName)
-	for _, f := range cachedFields {
-		if f.Tag.Name == f.FieldTyp.Name && strings.ToLower(f.FieldTyp.Name) == lowerName {
-			return structVal.Field(f.Index), f.Tag, true
-		}
+	lowerName := strings.ToLower(name)
+	if f, ok := info.lowerFields[lowerName]; ok {
+		return structVal.Field(f.Index), f.Tag, true
 	}
 
 	return reflect.Value{}, wanfTag{}, false
@@ -501,7 +604,7 @@ func (d *internalDecoder) setMapFromList(mapField reflect.Value, listVal interfa
 
 func (d *internalDecoder) decodeMapToStruct(sourceMap map[string]interface{}, targetStruct reflect.Value) error {
 	for key, val := range sourceMap {
-		field, _, ok := findFieldAndTag(targetStruct, []byte(key))
+		field, _, ok := findFieldAndTag(targetStruct, key)
 		if !ok {
 			continue
 		}
