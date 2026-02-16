@@ -210,11 +210,35 @@ func (d *internalDecoder) decodeBlock(stmt *BlockStatement, rv reflect.Value) er
 	}
 	if field.Kind() == reflect.Map {
 		mapType := field.Type()
-		if mapType.Key().Kind() == reflect.String && mapType.Elem().Kind() == reflect.String {
-			if field.IsNil() {
-				field.Set(reflect.MakeMap(mapType))
+		if mapType.Key().Kind() == reflect.String {
+			if mapType.Elem().Kind() == reflect.String {
+				if field.IsNil() {
+					field.Set(reflect.MakeMap(mapType))
+				}
+				return d.decodeMapStringString(stmt.Body, field)
 			}
-			return d.decodeMapStringString(stmt.Body, field)
+			if mapType.Elem().Kind() == reflect.Interface {
+				if field.IsNil() {
+					field.Set(reflect.MakeMap(mapType))
+				}
+				if stmt.Label == nil {
+					m, err := d.decodeBlockToMap(stmt.Body)
+					if err != nil {
+						return err
+					}
+					for k, v := range m {
+						field.SetMapIndex(reflect.ValueOf(k), reflect.ValueOf(v))
+					}
+					return nil
+				} else {
+					m, err := d.decodeBlockToMap(stmt.Body)
+					if err != nil {
+						return err
+					}
+					field.SetMapIndex(reflect.ValueOf(string(stmt.Label.Value)), reflect.ValueOf(m))
+					return nil
+				}
+			}
 		}
 		if stmt.Label == nil {
 			return fmt.Errorf("block %q is for a map, but is missing a label", string(stmt.Name.Value))
@@ -234,6 +258,10 @@ func (d *internalDecoder) decodeBlock(stmt *BlockStatement, rv reflect.Value) er
 }
 
 func (d *internalDecoder) setField(field reflect.Value, val interface{}) error {
+	if field.Kind() == reflect.Interface {
+		field.Set(reflect.ValueOf(val))
+		return nil
+	}
 	if !field.CanSet() {
 		return fmt.Errorf("cannot set field")
 	}
@@ -244,54 +272,78 @@ func (d *internalDecoder) setField(field reflect.Value, val interface{}) error {
 		return d.setField(field.Elem(), val)
 	}
 
-	v := reflect.ValueOf(val)
-
-	if v.Kind() == reflect.String {
-		s := v.String()
+	switch v := val.(type) {
+	case string:
 		switch field.Kind() {
+		case reflect.String:
+			field.SetString(v)
+			return nil
 		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 			if field.Type() == reflect.TypeOf(time.Duration(0)) {
-				dur, err := time.ParseDuration(s)
+				dur, err := time.ParseDuration(v)
 				if err == nil {
 					field.SetInt(int64(dur))
 					return nil
 				}
 			}
-			i, err := strconv.ParseInt(s, 0, field.Type().Bits())
+			i, err := strconv.ParseInt(v, 0, field.Type().Bits())
 			if err == nil {
 				field.SetInt(i)
 				return nil
 			}
 		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-			i, err := strconv.ParseUint(s, 0, field.Type().Bits())
+			i, err := strconv.ParseUint(v, 0, field.Type().Bits())
 			if err == nil {
 				field.SetUint(i)
 				return nil
 			}
 		case reflect.Float32, reflect.Float64:
-			f, err := strconv.ParseFloat(s, field.Type().Bits())
+			f, err := strconv.ParseFloat(v, field.Type().Bits())
 			if err == nil {
 				field.SetFloat(f)
 				return nil
 			}
 		case reflect.Bool:
-			b, err := strconv.ParseBool(s)
+			b, err := strconv.ParseBool(v)
 			if err == nil {
 				field.SetBool(b)
 				return nil
 			}
 		}
+	case int64:
+		switch field.Kind() {
+		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+			field.SetInt(v)
+			return nil
+		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+			field.SetUint(uint64(v))
+			return nil
+		case reflect.Float32, reflect.Float64:
+			field.SetFloat(float64(v))
+			return nil
+		}
+	case float64:
+		if field.Kind() == reflect.Float32 || field.Kind() == reflect.Float64 {
+			field.SetFloat(v)
+			return nil
+		}
+	case bool:
+		if field.Kind() == reflect.Bool {
+			field.SetBool(v)
+			return nil
+		}
 	}
 
-	if v.Type().ConvertibleTo(field.Type()) {
-		field.Set(v.Convert(field.Type()))
+	rv := reflect.ValueOf(val)
+	if rv.Type().ConvertibleTo(field.Type()) {
+		field.Set(rv.Convert(field.Type()))
 		return nil
 	}
-	if field.Kind() == reflect.Map && v.Kind() == reflect.Map {
-		return d.setMapField(field, v)
+	if field.Kind() == reflect.Map && rv.Kind() == reflect.Map {
+		return d.setMapField(field, rv)
 	}
-	if field.Kind() == reflect.Slice && v.Kind() == reflect.Slice {
-		return d.setSliceField(field, v)
+	if field.Kind() == reflect.Slice && rv.Kind() == reflect.Slice {
+		return d.setSliceField(field, rv)
 	}
 	return fmt.Errorf("cannot set field of type %s with value of type %T", field.Type(), val)
 }

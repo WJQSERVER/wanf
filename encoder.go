@@ -221,16 +221,28 @@ func (e *internalEncoder) encodeField(f fieldInfo, depth int) {
 }
 
 func (e *internalEncoder) encodeValue(v reflect.Value, depth int) {
-	if v.Kind() == reflect.Ptr {
+	if !v.IsValid() {
+		return
+	}
+
+	// 优先处理 interface{} 类型，使用 switch 枚举提高性能
+	if v.Kind() == reflect.Interface && !v.IsNil() {
+		e.encodeInterface(v.Interface(), depth)
+		return
+	}
+
+	for v.Kind() == reflect.Ptr {
 		if v.IsNil() {
 			return
 		}
 		v = v.Elem()
 	}
+
 	if v.Type() == durationType {
 		e.buf.WriteString(time.Duration(v.Int()).String())
 		return
 	}
+
 	switch v.Kind() {
 	case reflect.String:
 		s := v.String()
@@ -243,6 +255,8 @@ func (e *internalEncoder) encodeValue(v reflect.Value, depth int) {
 		}
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 		e.buf.Write(strconv.AppendInt(e.tmpBuf[:0], v.Int(), 10))
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		e.buf.Write(strconv.AppendUint(e.tmpBuf[:0], v.Uint(), 10))
 	case reflect.Float32, reflect.Float64:
 		e.buf.Write(strconv.AppendFloat(e.tmpBuf[:0], v.Float(), 'f', -1, 64))
 	case reflect.Bool:
@@ -297,7 +311,128 @@ func (e *internalEncoder) encodeSlice(v reflect.Value, depth int) {
 	e.buf.WriteString("]")
 }
 
+func (e *internalEncoder) encodeInterface(i interface{}, depth int) {
+	if i == nil {
+		return
+	}
+
+	switch val := i.(type) {
+	case string:
+		if e.opts.Style != StyleSingleLine && strings.Contains(val, "\n") {
+			e.buf.WriteByte('`')
+			e.buf.WriteString(val)
+			e.buf.WriteByte('`')
+		} else {
+			e.writeQuotedString(val)
+		}
+	case int:
+		e.buf.Write(strconv.AppendInt(e.tmpBuf[:0], int64(val), 10))
+	case int64:
+		e.buf.Write(strconv.AppendInt(e.tmpBuf[:0], val, 10))
+	case int32:
+		e.buf.Write(strconv.AppendInt(e.tmpBuf[:0], int64(val), 10))
+	case uint:
+		e.buf.Write(strconv.AppendUint(e.tmpBuf[:0], uint64(val), 10))
+	case uint64:
+		e.buf.Write(strconv.AppendUint(e.tmpBuf[:0], val, 10))
+	case uint32:
+		e.buf.Write(strconv.AppendUint(e.tmpBuf[:0], uint64(val), 10))
+	case float64:
+		e.buf.Write(strconv.AppendFloat(e.tmpBuf[:0], val, 'f', -1, 64))
+	case float32:
+		e.buf.Write(strconv.AppendFloat(e.tmpBuf[:0], float64(val), 'f', -1, 32))
+	case bool:
+		e.buf.Write(strconv.AppendBool(e.tmpBuf[:0], val))
+	case time.Duration:
+		e.buf.WriteString(val.String())
+	case map[string]interface{}:
+		e.encodeMapInterface(val, depth)
+	case []interface{}:
+		e.encodeSliceInterface(val, depth)
+	default:
+		// 回退到反射
+		e.encodeValue(reflect.ValueOf(i), depth)
+	}
+}
+
+func (e *internalEncoder) encodeMapInterface(m map[string]interface{}, depth int) {
+	e.buf.WriteString("{[")
+	if len(m) == 0 {
+		e.buf.WriteString("]}")
+		return
+	}
+
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	if e.opts.Style == StyleSingleLine {
+		for i, k := range keys {
+			if i > 0 {
+				e.buf.WriteString(",")
+			}
+			e.buf.Write(StringToBytes(k))
+			e.buf.WriteString("=")
+			e.encodeInterface(m[k], depth)
+		}
+	} else {
+		e.buf.WriteString("\n")
+		e.indent++
+		for _, k := range keys {
+			e.writeIndent()
+			e.buf.Write(StringToBytes(k))
+			e.writeSpace()
+			e.buf.WriteString("=")
+			e.writeSpace()
+			e.encodeInterface(m[k], depth)
+			e.buf.WriteString(",")
+			e.buf.WriteString("\n")
+		}
+		e.indent--
+		e.writeIndent()
+	}
+	e.buf.WriteString("]}")
+}
+
+func (e *internalEncoder) encodeSliceInterface(s []interface{}, depth int) {
+	e.buf.WriteString("[")
+	l := len(s)
+	if l == 0 {
+		e.buf.WriteString("]")
+		return
+	}
+
+	if e.opts.Style == StyleSingleLine {
+		for i, v := range s {
+			if i > 0 {
+				e.buf.WriteString(",")
+			}
+			e.encodeInterface(v, depth)
+		}
+	} else {
+		e.writeNewLine()
+		e.indent++
+		for _, v := range s {
+			e.writeIndent()
+			e.encodeInterface(v, depth)
+			e.buf.WriteString(",")
+			e.writeNewLine()
+		}
+		e.indent--
+		e.writeIndent()
+	}
+	e.buf.WriteString("]")
+}
+
 func (e *internalEncoder) encodeMap(v reflect.Value, depth int) {
+	// 如果是 map[string]any，使用快速路径
+	if v.Type().Key().Kind() == reflect.String && v.Type().Elem().Kind() == reflect.Interface {
+		e.encodeMapInterface(v.Interface().(map[string]interface{}), depth)
+		return
+	}
+
 	e.buf.WriteString("{[")
 	if v.Len() == 0 {
 		e.buf.WriteString("]}")
@@ -558,19 +693,27 @@ func (e *streamInternalEncoder) encodeField(f fieldInfo, depth int) {
 }
 
 func (e *streamInternalEncoder) encodeValue(v reflect.Value, depth int) {
-	if e.err != nil {
+	if e.err != nil || !v.IsValid() {
 		return
 	}
-	if v.Kind() == reflect.Ptr {
+
+	if v.Kind() == reflect.Interface && !v.IsNil() {
+		e.encodeInterface(v.Interface(), depth)
+		return
+	}
+
+	for v.Kind() == reflect.Ptr {
 		if v.IsNil() {
 			return
 		}
 		v = v.Elem()
 	}
+
 	if v.Type() == durationType {
 		e.writeString(time.Duration(v.Int()).String())
 		return
 	}
+
 	switch v.Kind() {
 	case reflect.String:
 		s := v.String()
@@ -583,6 +726,8 @@ func (e *streamInternalEncoder) encodeValue(v reflect.Value, depth int) {
 		}
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 		e.write(strconv.AppendInt(e.tmpBuf[:0], v.Int(), 10))
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		e.write(strconv.AppendUint(e.tmpBuf[:0], v.Uint(), 10))
 	case reflect.Float32, reflect.Float64:
 		e.write(strconv.AppendFloat(e.tmpBuf[:0], v.Float(), 'f', -1, 64))
 	case reflect.Bool:
@@ -640,10 +785,136 @@ func (e *streamInternalEncoder) encodeSlice(v reflect.Value, depth int) {
 	e.writeByte(']')
 }
 
+func (e *streamInternalEncoder) encodeInterface(i interface{}, depth int) {
+	if e.err != nil || i == nil {
+		return
+	}
+
+	switch val := i.(type) {
+	case string:
+		if e.opts.Style != StyleSingleLine && strings.Contains(val, "\n") {
+			e.writeByte('`')
+			e.writeString(val)
+			e.writeByte('`')
+		} else {
+			e.writeQuotedString(val)
+		}
+	case int:
+		e.write(strconv.AppendInt(e.tmpBuf[:0], int64(val), 10))
+	case int64:
+		e.write(strconv.AppendInt(e.tmpBuf[:0], val, 10))
+	case int32:
+		e.write(strconv.AppendInt(e.tmpBuf[:0], int64(val), 10))
+	case uint:
+		e.write(strconv.AppendUint(e.tmpBuf[:0], uint64(val), 10))
+	case uint64:
+		e.write(strconv.AppendUint(e.tmpBuf[:0], val, 10))
+	case uint32:
+		e.write(strconv.AppendUint(e.tmpBuf[:0], uint64(val), 10))
+	case float64:
+		e.write(strconv.AppendFloat(e.tmpBuf[:0], val, 'f', -1, 64))
+	case float32:
+		e.write(strconv.AppendFloat(e.tmpBuf[:0], float64(val), 'f', -1, 32))
+	case bool:
+		e.write(strconv.AppendBool(e.tmpBuf[:0], val))
+	case time.Duration:
+		e.writeString(val.String())
+	case map[string]interface{}:
+		e.encodeMapInterface(val, depth)
+	case []interface{}:
+		e.encodeSliceInterface(val, depth)
+	default:
+		e.encodeValue(reflect.ValueOf(i), depth)
+	}
+}
+
+func (e *streamInternalEncoder) encodeMapInterface(m map[string]interface{}, depth int) {
+	if e.err != nil {
+		return
+	}
+	e.writeString("{[")
+	if len(m) == 0 {
+		e.writeString("]}")
+		return
+	}
+
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	if e.opts.Style == StyleSingleLine {
+		for i, k := range keys {
+			if i > 0 {
+				e.writeString(",")
+			}
+			e.writeString(k)
+			e.writeString("=")
+			e.encodeInterface(m[k], depth)
+		}
+	} else {
+		e.writeNewLine()
+		e.indent++
+		for _, k := range keys {
+			e.writeIndent()
+			e.writeString(k)
+			e.writeSpace()
+			e.writeString("=")
+			e.writeSpace()
+			e.encodeInterface(m[k], depth)
+			e.writeString(",")
+			e.writeNewLine()
+		}
+		e.indent--
+		e.writeIndent()
+	}
+	e.writeString("]}")
+}
+
+func (e *streamInternalEncoder) encodeSliceInterface(s []interface{}, depth int) {
+	if e.err != nil {
+		return
+	}
+	e.writeString("[")
+	l := len(s)
+	if l == 0 {
+		e.writeByte(']')
+		return
+	}
+
+	if e.opts.Style == StyleSingleLine {
+		for i, v := range s {
+			if i > 0 {
+				e.writeString(",")
+			}
+			e.encodeInterface(v, depth)
+		}
+	} else {
+		e.writeNewLine()
+		e.indent++
+		for _, v := range s {
+			e.writeIndent()
+			e.encodeInterface(v, depth)
+			e.writeString(",")
+			e.writeNewLine()
+		}
+		e.indent--
+		e.writeIndent()
+	}
+	e.writeByte(']')
+}
+
 func (e *streamInternalEncoder) encodeMap(v reflect.Value, depth int) {
 	if e.err != nil {
 		return
 	}
+	// 如果是 map[string]any，使用快速路径
+	if v.Type().Key().Kind() == reflect.String && v.Type().Elem().Kind() == reflect.Interface {
+		e.encodeMapInterface(v.Interface().(map[string]interface{}), depth)
+		return
+	}
+
 	e.writeString("{[")
 	if v.Len() == 0 {
 		e.writeString("]}")

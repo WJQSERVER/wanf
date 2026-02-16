@@ -131,12 +131,12 @@ func (dec *StreamDecoder) decodeAssignStatement(rv reflect.Value) error {
 
 // decodeBlockStatement 解码块语句，现在负责消费末尾的'}'。
 func (dec *StreamDecoder) decodeBlockStatement(rv reflect.Value) error {
-	blockName := dec.p.curToken.Literal // 块标识符名称
-	dec.p.nextToken()                   // 消费块名称
+	blockName := string(dec.p.curToken.Literal) // 块标识符名称
+	dec.p.nextToken()                           // 消费块名称
 
 	var label string
 	if dec.p.curTokenIs(STRING) { // 如果块带有字符串标签
-		label = BytesToString(dec.p.curToken.Literal)
+		label = string(dec.p.curToken.Literal)
 		dec.p.nextToken() // 消费标签
 	}
 
@@ -146,7 +146,7 @@ func (dec *StreamDecoder) decodeBlockStatement(rv reflect.Value) error {
 	dec.p.nextToken() // 消费'{'
 
 	// 查找结构体字段及其标签
-	field, _, ok := findFieldAndTag(rv, blockName)
+	field, _, ok := findFieldAndTag(rv, []byte(blockName))
 	if !ok {
 		return dec.skipBlock() // 如果未找到字段，则跳过整个块
 	}
@@ -161,22 +161,44 @@ func (dec *StreamDecoder) decodeBlockStatement(rv reflect.Value) error {
 		if field.IsNil() {
 			field.Set(reflect.MakeMap(field.Type())) // 如果map为空，则初始化
 		}
-		mapElemType := field.Type().Elem()         // 获取map元素类型
+		mapElemType := field.Type().Elem() // 获取map元素类型
+
+		if mapElemType.Kind() == reflect.Interface {
+			if label == "" {
+				m, err := dec.decodeBlockLiteralBodyOnTheFly()
+				if err != nil {
+					return err
+				}
+				for k, v := range m.(map[string]interface{}) {
+					field.SetMapIndex(reflect.ValueOf(k), reflect.ValueOf(v))
+				}
+				// decodeBlockLiteralBodyOnTheFly 已经消费了 '}'，所以我们直接返回
+				return nil
+			} else {
+				m, err := dec.decodeBlockLiteralBodyOnTheFly()
+				if err != nil {
+					return err
+				}
+				field.SetMapIndex(reflect.ValueOf(label), reflect.ValueOf(m))
+				return nil
+			}
+		}
+
 		newElem := reflect.New(mapElemType).Elem() // 创建新的map元素实例
 		// 解码map元素内部内容
 		if err := dec.decodeBody(newElem); err != nil && err != io.EOF {
 			return err
 		}
 		if label == "" { // map块需要一个标签作为key
-			return fmt.Errorf("wanf: map block %q requires a label", BytesToString(blockName))
+			return fmt.Errorf("wanf: map block %q requires a label", blockName)
 		}
 		field.SetMapIndex(reflect.ValueOf(label), newElem) // 将解码后的元素设置到map中
 	default: // 不支持的块解码类型
-		return fmt.Errorf("wanf: block %q cannot be decoded into field of type %s", BytesToString(blockName), field.Type())
+		return fmt.Errorf("wanf: block %q cannot be decoded into field of type %s", blockName, field.Type())
 	}
 
 	if !dec.p.curTokenIs(RBRACE) { // 期望块以'}'结束
-		return fmt.Errorf("wanf: expected '}' to close block %q on line %d", BytesToString(blockName), dec.p.curToken.Line)
+		return fmt.Errorf("wanf: expected '}' to close block %q on line %d", blockName, dec.p.curToken.Line)
 	}
 	dec.p.nextToken() // 消费'}'
 	return nil
@@ -189,15 +211,15 @@ func (dec *StreamDecoder) evalExpressionOnTheFly() (interface{}, error) {
 
 	switch dec.p.curToken.Type {
 	case INT: // 整数
-		val, err = strconv.ParseInt(BytesToString(dec.p.curToken.Literal), 0, 64)
+		val, err = strconv.ParseInt(string(dec.p.curToken.Literal), 0, 64)
 	case FLOAT: // 浮点数
-		val, err = strconv.ParseFloat(BytesToString(dec.p.curToken.Literal), 64)
+		val, err = strconv.ParseFloat(string(dec.p.curToken.Literal), 64)
 	case STRING: // 字符串
-		val = BytesToString(dec.p.curToken.Literal)
+		val = string(dec.p.curToken.Literal)
 	case BOOL: // 布尔值
-		val, err = strconv.ParseBool(BytesToString(dec.p.curToken.Literal))
+		val, err = strconv.ParseBool(string(dec.p.curToken.Literal))
 	case DUR: // 时间段 (duration)
-		val, err = time.ParseDuration(BytesToString(dec.p.curToken.Literal))
+		val, err = time.ParseDuration(string(dec.p.curToken.Literal))
 	case IDENT: // 标识符
 		if bytes.Equal(dec.p.curToken.Literal, []byte("env")) { // 如果是env()函数调用
 			return dec.evalEnvExpressionOnTheFly()
@@ -252,8 +274,13 @@ func (dec *StreamDecoder) decodeListLiteralOnTheFly() (interface{}, error) {
 
 // decodeBlockLiteralOnTheFly 实时解码块字面量（map[string]interface{}），并消费末尾的'}'。
 func (dec *StreamDecoder) decodeBlockLiteralOnTheFly() (interface{}, error) {
-	m := make(map[string]interface{})
 	dec.p.nextToken() // 消费'{'
+	return dec.decodeBlockLiteralBodyOnTheFly()
+}
+
+// decodeBlockLiteralBodyOnTheFly 实时解码块字面量的主体部分，并消费末尾的'}'。
+func (dec *StreamDecoder) decodeBlockLiteralBodyOnTheFly() (interface{}, error) {
+	m := make(map[string]interface{})
 
 	for !dec.p.curTokenIs(RBRACE) && !dec.p.curTokenIs(EOF) {
 		if dec.p.curTokenIs(COMMENT) || dec.p.curTokenIs(SEMICOLON) { // 忽略注释和分号
@@ -261,9 +288,9 @@ func (dec *StreamDecoder) decodeBlockLiteralOnTheFly() (interface{}, error) {
 			continue
 		}
 		if !dec.p.curTokenIs(IDENT) { // 期望标识符作为块字面量的键
-			return nil, fmt.Errorf("wanf: expected identifier as key in block literal")
+			return nil, fmt.Errorf("wanf: expected identifier as key in block literal (line %d, got %s)", dec.p.curToken.Line, dec.p.curToken.Type)
 		}
-		key := BytesToString(dec.p.curToken.Literal) // 获取键
+		key := string(dec.p.curToken.Literal) // 获取键
 
 		dec.p.nextToken()              // 消费标识符
 		if !dec.p.curTokenIs(ASSIGN) { // 期望键后跟'='
@@ -295,8 +322,8 @@ func (dec *StreamDecoder) decodeMapLiteralOnTheFly() (interface{}, error) {
 		if !dec.p.curTokenIs(IDENT) { // 期望标识符作为map字面量的键
 			return nil, fmt.Errorf("wanf: expected identifier as key in map literal")
 		}
-		key := BytesToString(dec.p.curToken.Literal) // 获取键
-		dec.p.nextToken()                            // 消费标识符
+		key := string(dec.p.curToken.Literal) // 获取键
+		dec.p.nextToken()                     // 消费标识符
 		if !dec.p.curTokenIs(ASSIGN) {               // 期望键后跟'='
 			return nil, fmt.Errorf("wanf: expected '=' after key in map literal")
 		}
@@ -336,8 +363,8 @@ func (dec *StreamDecoder) evalEnvExpressionOnTheFly() (interface{}, error) {
 	if !dec.p.curTokenIs(STRING) { // 期望env()的参数是字符串
 		return nil, fmt.Errorf("wanf: expected string argument for env()")
 	}
-	envVarName := BytesToString(dec.p.curToken.Literal) // 获取环境变量名
-	dec.p.nextToken()                                   // 消费环境变量名字符串
+	envVarName := string(dec.p.curToken.Literal) // 获取环境变量名
+	dec.p.nextToken()                            // 消费环境变量名字符串
 
 	var val string
 	var found bool
@@ -348,8 +375,8 @@ func (dec *StreamDecoder) evalEnvExpressionOnTheFly() (interface{}, error) {
 		if !dec.p.curTokenIs(STRING) { // 期望默认值是字符串
 			return nil, fmt.Errorf("wanf: expected string for env() default value")
 		}
-		defaultValue := BytesToString(dec.p.curToken.Literal) // 获取默认值
-		dec.p.nextToken()                                     // 消费默认值字符串
+		defaultValue := string(dec.p.curToken.Literal) // 获取默认值
+		dec.p.nextToken()                              // 消费默认值字符串
 
 		val, found = os.LookupEnv(envVarName) // 查找环境变量
 		if !found {
