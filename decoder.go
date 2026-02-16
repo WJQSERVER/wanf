@@ -55,7 +55,7 @@ func NewDecoder(r io.Reader, opts ...DecoderOption) (*Decoder, error) {
 		}
 		return nil, fmt.Errorf("parser errors: %s", strings.Join(errs, "\n"))
 	}
-	d := &internalDecoder{vars: make(map[string]interface{})}
+	d := &internalDecoder{vars: make(map[string]any)}
 	for _, opt := range opts {
 		opt(d)
 	}
@@ -156,16 +156,16 @@ func getOrCacheDecoderFields(typ reflect.Type) *cachedDecoderInfo {
 	return info
 }
 
-func (dec *Decoder) Decode(v interface{}) error {
+func (dec *Decoder) Decode(v any) error {
 	rv := reflect.ValueOf(v)
-	if rv.Kind() != reflect.Ptr || rv.Elem().Kind() != reflect.Struct {
+	if rv.Kind() != reflect.Pointer || rv.Elem().Kind() != reflect.Struct {
 		return fmt.Errorf("v must be a pointer to a struct")
 	}
 	return dec.d.decodeRoot(dec.program, rv.Elem())
 }
 
 type internalDecoder struct {
-	vars     map[string]interface{}
+	vars     map[string]any
 	basePath string
 }
 
@@ -208,7 +208,7 @@ func (d *internalDecoder) decodeBlock(stmt *BlockStatement, rv reflect.Value) er
 	if !ok {
 		return nil
 	}
-	if field.Kind() == reflect.Ptr && field.Type().Elem().Kind() == reflect.Struct {
+	if field.Kind() == reflect.Pointer && field.Type().Elem().Kind() == reflect.Struct {
 		if field.IsNil() {
 			field.Set(reflect.New(field.Type().Elem()))
 		}
@@ -266,7 +266,7 @@ func (d *internalDecoder) decodeBlock(stmt *BlockStatement, rv reflect.Value) er
 	return nil
 }
 
-func (d *internalDecoder) setField(field reflect.Value, val interface{}) error {
+func (d *internalDecoder) setField(field reflect.Value, val any) error {
 	if field.Kind() == reflect.Interface {
 		field.Set(reflect.ValueOf(val))
 		return nil
@@ -274,7 +274,7 @@ func (d *internalDecoder) setField(field reflect.Value, val interface{}) error {
 	if !field.CanSet() {
 		return fmt.Errorf("cannot set field")
 	}
-	if field.Kind() == reflect.Ptr {
+	if field.Kind() == reflect.Pointer {
 		if field.IsNil() {
 			field.Set(reflect.New(field.Type().Elem()))
 		}
@@ -288,7 +288,7 @@ func (d *internalDecoder) setField(field reflect.Value, val interface{}) error {
 			field.SetString(v)
 			return nil
 		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-			if field.Type() == reflect.TypeOf(time.Duration(0)) {
+			if field.Type() == reflect.TypeFor[time.Duration]() {
 				dur, err := time.ParseDuration(v)
 				if err == nil {
 					field.SetInt(int64(dur))
@@ -346,12 +346,12 @@ func (d *internalDecoder) setField(field reflect.Value, val interface{}) error {
 			field.SetInt(int64(v))
 			return nil
 		}
-	case []interface{}:
+	case []any:
 		if field.Kind() == reflect.Slice && field.Type().Elem().Kind() == reflect.Interface {
 			field.Set(reflect.ValueOf(v))
 			return nil
 		}
-	case map[string]interface{}:
+	case map[string]any:
 		if field.Kind() == reflect.Map && field.Type().Key().Kind() == reflect.String && field.Type().Elem().Kind() == reflect.Interface {
 			field.Set(reflect.ValueOf(v))
 			return nil
@@ -389,7 +389,7 @@ func (d *internalDecoder) setMapField(field, v reflect.Value) error {
 				continue
 			}
 
-			sourceMap, ok := val.(map[string]interface{})
+			sourceMap, ok := val.(map[string]any)
 			if !ok {
 				return fmt.Errorf("value for struct map must be a map object, got %T", val)
 			}
@@ -419,7 +419,7 @@ func (d *internalDecoder) setSliceField(field, v reflect.Value) error {
 		val := v.Index(i).Interface()
 
 		if elemType.Kind() == reflect.Struct {
-			if sourceMap, ok := val.(map[string]interface{}); ok {
+			if sourceMap, ok := val.(map[string]any); ok {
 				newStruct := reflect.New(elemType).Elem()
 				if err := d.decodeMapToStruct(sourceMap, newStruct); err != nil {
 					return err
@@ -440,7 +440,7 @@ func (d *internalDecoder) setSliceField(field, v reflect.Value) error {
 	return nil
 }
 
-func (d *internalDecoder) evalExpression(expr Expression) (interface{}, error) {
+func (d *internalDecoder) evalExpression(expr Expression) (any, error) {
 	switch e := expr.(type) {
 	case *IntegerLiteral:
 		return e.Value, nil
@@ -468,7 +468,7 @@ func (d *internalDecoder) evalExpression(expr Expression) (interface{}, error) {
 		}
 		return val, nil
 	case *ListLiteral:
-		list := make([]interface{}, len(e.Elements))
+		list := make([]any, len(e.Elements))
 		for i, elemExpr := range e.Elements {
 			val, err := d.evalExpression(elemExpr)
 			if err != nil {
@@ -485,8 +485,8 @@ func (d *internalDecoder) evalExpression(expr Expression) (interface{}, error) {
 	return nil, fmt.Errorf("unknown expression type: %T", expr)
 }
 
-func (d *internalDecoder) decodeMapLiteralToMap(ml *MapLiteral) (map[string]interface{}, error) {
-	m := make(map[string]interface{}, len(ml.Elements))
+func (d *internalDecoder) decodeMapLiteralToMap(ml *MapLiteral) (map[string]any, error) {
+	m := make(map[string]any, len(ml.Elements))
 	for _, stmt := range ml.Elements {
 		assign, ok := stmt.(*AssignStatement)
 		if !ok {
@@ -501,8 +501,8 @@ func (d *internalDecoder) decodeMapLiteralToMap(ml *MapLiteral) (map[string]inte
 	return m, nil
 }
 
-func (d *internalDecoder) decodeBlockToMap(body *RootNode) (map[string]interface{}, error) {
-	m := make(map[string]interface{}, len(body.Statements))
+func (d *internalDecoder) decodeBlockToMap(body *RootNode) (map[string]any, error) {
+	m := make(map[string]any, len(body.Statements))
 	for _, stmt := range body.Statements {
 		switch s := stmt.(type) {
 		case *AssignStatement:
@@ -538,11 +538,11 @@ func findFieldAndTag(structVal reflect.Value, name string) (reflect.Value, wanfT
 	return reflect.Value{}, wanfTag{}, false
 }
 
-func (d *internalDecoder) setMapFromList(mapField reflect.Value, listVal interface{}, keyField string) error {
+func (d *internalDecoder) setMapFromList(mapField reflect.Value, listVal any, keyField string) error {
 	if mapField.Kind() != reflect.Map {
 		return fmt.Errorf("cannot set list to non-map field %s", mapField.Type())
 	}
-	sourceList, ok := listVal.([]interface{})
+	sourceList, ok := listVal.([]any)
 	if !ok {
 		return fmt.Errorf("value for map field with 'key' tag must be a list")
 	}
@@ -551,7 +551,7 @@ func (d *internalDecoder) setMapFromList(mapField reflect.Value, listVal interfa
 	}
 	elemType := mapField.Type().Elem()
 	for _, item := range sourceList {
-		sourceMap, ok := item.(map[string]interface{})
+		sourceMap, ok := item.(map[string]any)
 		if !ok {
 			return fmt.Errorf("items in list for keyed map must be objects")
 		}
@@ -572,7 +572,7 @@ func (d *internalDecoder) setMapFromList(mapField reflect.Value, listVal interfa
 	return nil
 }
 
-func (d *internalDecoder) decodeMapToStruct(sourceMap map[string]interface{}, targetStruct reflect.Value) error {
+func (d *internalDecoder) decodeMapToStruct(sourceMap map[string]any, targetStruct reflect.Value) error {
 	for key, val := range sourceMap {
 		field, _, ok := findFieldAndTag(targetStruct, key)
 		if !ok {

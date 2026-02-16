@@ -8,7 +8,7 @@ import (
 )
 
 var bufferPool = sync.Pool{
-	New: func() interface{} {
+	New: func() any {
 		return &bytes.Buffer{}
 	},
 }
@@ -76,7 +76,7 @@ func (p *RootNode) Format(w *bytes.Buffer, indent string, opts FormatOptions) {
 		if as, ok := s.(*AssignStatement); ok {
 			if as.Value != nil {
 				valType := reflect.TypeOf(as.Value)
-				if valType == reflect.TypeOf(&MapLiteral{}) || valType == reflect.TypeOf(&ListLiteral{}) {
+				if valType == reflect.TypeFor[*MapLiteral]() || valType == reflect.TypeFor[*ListLiteral]() {
 					return true
 				}
 			}

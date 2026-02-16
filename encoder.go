@@ -14,10 +14,10 @@ import (
 	"unicode/utf8"
 )
 
-var durationType = reflect.TypeOf(time.Duration(0))
+var durationType = reflect.TypeFor[time.Duration]()
 
 var encoderPool = sync.Pool{
-	New: func() interface{} {
+	New: func() any {
 		return &internalEncoder{
 			buf: &bytes.Buffer{},
 		}
@@ -28,7 +28,7 @@ var encoderPool = sync.Pool{
 var fieldCache sync.Map // map[reflect.Type]*cachedStructInfo
 
 var byteSlicePool = sync.Pool{
-	New: func() interface{} {
+	New: func() any {
 		b := make([]byte, 0, 64) // For strconv formatting
 		return &b
 	},
@@ -40,14 +40,14 @@ type mapEntry struct {
 }
 
 var mapEntrySlicePool = sync.Pool{
-	New: func() interface{} {
+	New: func() any {
 		s := make([]mapEntry, 0, 8) // Start with capacity for 8 map entries
 		return &s
 	},
 }
 
 var streamEncoderPool = sync.Pool{
-	New: func() interface{} {
+	New: func() any {
 		return &streamInternalEncoder{}
 	},
 }
@@ -62,7 +62,7 @@ func putEncoder(e *internalEncoder) {
 	encoderPool.Put(e)
 }
 
-func Marshal(v interface{}) ([]byte, error) {
+func Marshal(v any) ([]byte, error) {
 	var buf bytes.Buffer
 	encoder := NewEncoder(&buf)
 	if err := encoder.Encode(v); err != nil {
@@ -103,7 +103,7 @@ func NewEncoder(w io.Writer, opts ...EncoderOption) *Encoder {
 	return &Encoder{w: w, e: e}
 }
 
-func (enc *Encoder) Encode(v interface{}) error {
+func (enc *Encoder) Encode(v any) error {
 	defer putEncoder(enc.e)
 
 	tmpBufPtr := byteSlicePool.Get().(*[]byte)
@@ -114,7 +114,7 @@ func (enc *Encoder) Encode(v interface{}) error {
 	}()
 
 	rv := reflect.ValueOf(v)
-	if rv.Kind() == reflect.Ptr {
+	if rv.Kind() == reflect.Pointer {
 		rv = rv.Elem()
 	}
 	if !rv.IsValid() || rv.Kind() != reflect.Struct {
@@ -249,7 +249,7 @@ func (e *internalEncoder) encodeValue(v reflect.Value, depth int) {
 		return
 	}
 
-	for v.Kind() == reflect.Ptr {
+	for v.Kind() == reflect.Pointer {
 		if v.IsNil() {
 			return
 		}
@@ -303,7 +303,7 @@ func (e *internalEncoder) encodeSlice(v reflect.Value, depth int) {
 	// 尝试常见 Slice 类型的快速路径
 	switch v.Type().Elem().Kind() {
 	case reflect.Interface:
-		if s, ok := v.Interface().([]interface{}); ok {
+		if s, ok := v.Interface().([]any); ok {
 			e.encodeSliceInterface(s, depth)
 			return
 		}
@@ -322,7 +322,7 @@ func (e *internalEncoder) encodeSlice(v reflect.Value, depth int) {
 	}
 
 	if e.opts.Style == StyleSingleLine {
-		for i := 0; i < l; i++ {
+		for i := range l {
 			if i > 0 {
 				e.buf.WriteString(",")
 			}
@@ -331,7 +331,7 @@ func (e *internalEncoder) encodeSlice(v reflect.Value, depth int) {
 	} else {
 		e.writeNewLine()
 		e.indent++
-		for i := 0; i < l; i++ {
+		for i := range l {
 			e.writeIndent()
 			e.encodeValue(v.Index(i), depth)
 			e.buf.WriteString(",")
@@ -343,7 +343,7 @@ func (e *internalEncoder) encodeSlice(v reflect.Value, depth int) {
 	e.buf.WriteString("]")
 }
 
-func (e *internalEncoder) encodeInterface(i interface{}, depth int) {
+func (e *internalEncoder) encodeInterface(i any, depth int) {
 	if i == nil {
 		return
 	}
@@ -377,11 +377,11 @@ func (e *internalEncoder) encodeInterface(i interface{}, depth int) {
 		e.buf.Write(strconv.AppendBool(e.tmpBuf[:0], val))
 	case time.Duration:
 		e.buf.WriteString(val.String())
-	case map[string]interface{}:
+	case map[string]any:
 		e.encodeMapInterface(val, depth)
 	case map[string]string:
 		e.encodeMapStringString(val, depth)
-	case []interface{}:
+	case []any:
 		e.encodeSliceInterface(val, depth)
 	case []string:
 		e.encodeSliceString(val, depth)
@@ -470,7 +470,7 @@ func (e *internalEncoder) encodeSliceString(s []string, depth int) {
 	e.buf.WriteString("]")
 }
 
-func (e *internalEncoder) encodeMapInterface(m map[string]interface{}, depth int) {
+func (e *internalEncoder) encodeMapInterface(m map[string]any, depth int) {
 	e.buf.WriteString("{[")
 	if len(m) == 0 {
 		e.buf.WriteString("]}")
@@ -511,7 +511,7 @@ func (e *internalEncoder) encodeMapInterface(m map[string]interface{}, depth int
 	e.buf.WriteString("]}")
 }
 
-func (e *internalEncoder) encodeSliceInterface(s []interface{}, depth int) {
+func (e *internalEncoder) encodeSliceInterface(s []any, depth int) {
 	e.buf.WriteString("[")
 	l := len(s)
 	if l == 0 {
@@ -546,7 +546,7 @@ func (e *internalEncoder) encodeMap(v reflect.Value, depth int) {
 	if v.Type().Key().Kind() == reflect.String {
 		switch v.Type().Elem().Kind() {
 		case reflect.Interface:
-			if m, ok := v.Interface().(map[string]interface{}); ok {
+			if m, ok := v.Interface().(map[string]any); ok {
 				e.encodeMapInterface(m, depth)
 				return
 			}
@@ -740,9 +740,9 @@ func (e *internalEncoder) writeQuotedString(s string) {
 
 var hex = "0123456789abcdef"
 
-func (e *streamInternalEncoder) encode(v interface{}) error {
+func (e *streamInternalEncoder) encode(v any) error {
 	rv := reflect.ValueOf(v)
-	if rv.Kind() == reflect.Ptr {
+	if rv.Kind() == reflect.Pointer {
 		rv = rv.Elem()
 	}
 	if !rv.IsValid() || rv.Kind() != reflect.Struct {
@@ -847,7 +847,7 @@ func (e *streamInternalEncoder) encodeValue(v reflect.Value, depth int) {
 		return
 	}
 
-	for v.Kind() == reflect.Ptr {
+	for v.Kind() == reflect.Pointer {
 		if v.IsNil() {
 			return
 		}
@@ -904,7 +904,7 @@ func (e *streamInternalEncoder) encodeSlice(v reflect.Value, depth int) {
 	// 尝试常见 Slice 类型的快速路径
 	switch v.Type().Elem().Kind() {
 	case reflect.Interface:
-		if s, ok := v.Interface().([]interface{}); ok {
+		if s, ok := v.Interface().([]any); ok {
 			e.encodeSliceInterface(s, depth)
 			return
 		}
@@ -923,7 +923,7 @@ func (e *streamInternalEncoder) encodeSlice(v reflect.Value, depth int) {
 	}
 
 	if e.opts.Style == StyleSingleLine {
-		for i := 0; i < l; i++ {
+		for i := range l {
 			if i > 0 {
 				e.writeString(",")
 			}
@@ -932,7 +932,7 @@ func (e *streamInternalEncoder) encodeSlice(v reflect.Value, depth int) {
 	} else {
 		e.writeNewLine()
 		e.indent++
-		for i := 0; i < l; i++ {
+		for i := range l {
 			e.writeIndent()
 			e.encodeValue(v.Index(i), depth)
 			e.writeString(",")
@@ -944,7 +944,7 @@ func (e *streamInternalEncoder) encodeSlice(v reflect.Value, depth int) {
 	e.writeByte(']')
 }
 
-func (e *streamInternalEncoder) encodeInterface(i interface{}, depth int) {
+func (e *streamInternalEncoder) encodeInterface(i any, depth int) {
 	if e.err != nil || i == nil {
 		return
 	}
@@ -978,11 +978,11 @@ func (e *streamInternalEncoder) encodeInterface(i interface{}, depth int) {
 		e.write(strconv.AppendBool(e.tmpBuf[:0], val))
 	case time.Duration:
 		e.writeString(val.String())
-	case map[string]interface{}:
+	case map[string]any:
 		e.encodeMapInterface(val, depth)
 	case map[string]string:
 		e.encodeMapStringString(val, depth)
-	case []interface{}:
+	case []any:
 		e.encodeSliceInterface(val, depth)
 	case []string:
 		e.encodeSliceString(val, depth)
@@ -1076,7 +1076,7 @@ func (e *streamInternalEncoder) encodeSliceString(s []string, depth int) {
 	e.writeByte(']')
 }
 
-func (e *streamInternalEncoder) encodeMapInterface(m map[string]interface{}, depth int) {
+func (e *streamInternalEncoder) encodeMapInterface(m map[string]any, depth int) {
 	if e.err != nil {
 		return
 	}
@@ -1120,7 +1120,7 @@ func (e *streamInternalEncoder) encodeMapInterface(m map[string]interface{}, dep
 	e.writeString("]}")
 }
 
-func (e *streamInternalEncoder) encodeSliceInterface(s []interface{}, depth int) {
+func (e *streamInternalEncoder) encodeSliceInterface(s []any, depth int) {
 	if e.err != nil {
 		return
 	}
@@ -1161,7 +1161,7 @@ func (e *streamInternalEncoder) encodeMap(v reflect.Value, depth int) {
 	if v.Type().Key().Kind() == reflect.String {
 		switch v.Type().Elem().Kind() {
 		case reflect.Interface:
-			if m, ok := v.Interface().(map[string]interface{}); ok {
+			if m, ok := v.Interface().(map[string]any); ok {
 				e.encodeMapInterface(m, depth)
 				return
 			}
@@ -1231,7 +1231,7 @@ func cacheStructInfo(t reflect.Type) *cachedStructInfo {
 		tagStr := fieldType.Tag.Get("wanf")
 		tagInfo := parseWanfTag(tagStr, fieldType.Name)
 		ft := fieldType.Type
-		if ft.Kind() == reflect.Ptr {
+		if ft.Kind() == reflect.Pointer {
 			ft = ft.Elem()
 		}
 		isBlock := isBlockType(ft, tagInfo)
@@ -1263,7 +1263,7 @@ func cacheStructInfo(t reflect.Type) *cachedStructInfo {
 }
 
 func isBlockType(ft reflect.Type, tag wanfTag) bool {
-	if ft.Kind() == reflect.Ptr {
+	if ft.Kind() == reflect.Pointer {
 		ft = ft.Elem()
 	}
 	// 只有结构体是块. 映射被视为值.
@@ -1288,7 +1288,7 @@ func isZero(v reflect.Value) bool {
 		return v.Uint() == 0
 	case reflect.Float32, reflect.Float64:
 		return v.Float() == 0
-	case reflect.Interface, reflect.Ptr:
+	case reflect.Interface, reflect.Pointer:
 		return v.IsNil()
 	case reflect.Slice, reflect.Map, reflect.Array:
 		return v.Len() == 0
@@ -1307,7 +1307,7 @@ func NewStreamEncoder(w io.Writer, opts ...EncoderOption) *StreamEncoder {
 	return &StreamEncoder{w: w}
 }
 
-func (enc *StreamEncoder) Encode(v interface{}, opts ...EncoderOption) error {
+func (enc *StreamEncoder) Encode(v any, opts ...EncoderOption) error {
 	options := FormatOptions{
 		Style:      StyleBlockSorted,
 		EmptyLines: true,

@@ -8,7 +8,7 @@ import (
 var singleCharByteSlices [256][]byte
 
 func init() {
-	for i := 0; i < 256; i++ {
+	for i := range 256 {
 		singleCharByteSlices[i] = []byte{byte(i)}
 	}
 }

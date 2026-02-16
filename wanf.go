@@ -37,7 +37,7 @@ func Format(program *RootNode, opts FormatOptions) []byte {
 	return out.Bytes()
 }
 
-func DecodeFile(path string, v interface{}) error {
+func DecodeFile(path string, v any) error {
 	f, err := os.Open(path)
 	if err != nil {
 		return err
@@ -50,7 +50,7 @@ func DecodeFile(path string, v interface{}) error {
 	return dec.Decode(v)
 }
 
-func Decode(data []byte, v interface{}) error {
+func Decode(data []byte, v any) error {
 	if len(data) == 0 {
 		return nil
 	}

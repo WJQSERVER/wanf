@@ -1,5 +1,5 @@
 module github.com/WJQSERVER/wanf
 
-go 1.25
+go 1.26
 
 require github.com/go-json-experiment/json v0.0.0-20250725192818-e39067aee2d2

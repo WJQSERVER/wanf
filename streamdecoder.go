@@ -21,7 +21,7 @@ type StreamDecoder struct {
 // NewStreamDecoder 创建并返回一个新的StreamDecoder实例。
 // 它接收一个io.Reader作为输入源，以及可选的DecoderOption配置选项。
 func NewStreamDecoder(r io.Reader, opts ...DecoderOption) (*StreamDecoder, error) {
-	d := &internalDecoder{vars: make(map[string]interface{})}
+	d := &internalDecoder{vars: make(map[string]any)}
 	for _, opt := range opts {
 		opt(d)
 	}
@@ -39,10 +39,10 @@ func NewStreamDecoder(r io.Reader, opts ...DecoderOption) (*StreamDecoder, error
 
 // Decode 将输入流中的WANF数据解码到v指向的结构体中。
 // v必须是一个指向结构体的指针。
-func (dec *StreamDecoder) Decode(v interface{}) error {
+func (dec *StreamDecoder) Decode(v any) error {
 	rv := reflect.ValueOf(v)
 	// 验证v是否为结构体指针
-	if rv.Kind() != reflect.Ptr || rv.Elem().Kind() != reflect.Struct {
+	if rv.Kind() != reflect.Pointer || rv.Elem().Kind() != reflect.Struct {
 		return fmt.Errorf("v must be a pointer to a struct")
 	}
 
@@ -169,7 +169,7 @@ func (dec *StreamDecoder) decodeBlockStatement(rv reflect.Value) error {
 				if err != nil {
 					return err
 				}
-				for k, v := range m.(map[string]interface{}) {
+				for k, v := range m.(map[string]any) {
 					field.SetMapIndex(reflect.ValueOf(k), reflect.ValueOf(v))
 				}
 				// decodeBlockLiteralBodyOnTheFly 已经消费了 '}'，所以我们直接返回
@@ -205,8 +205,8 @@ func (dec *StreamDecoder) decodeBlockStatement(rv reflect.Value) error {
 }
 
 // evalExpressionOnTheFly 实时评估表达式的值，并消费表达式的最后一个token。
-func (dec *StreamDecoder) evalExpressionOnTheFly() (interface{}, error) {
-	var val interface{}
+func (dec *StreamDecoder) evalExpressionOnTheFly() (any, error) {
+	var val any
 	var err error
 
 	switch dec.p.curToken.Type {
@@ -246,8 +246,8 @@ func (dec *StreamDecoder) evalExpressionOnTheFly() (interface{}, error) {
 }
 
 // decodeListLiteralOnTheFly 实时解码列表字面量，并消费末尾的']'。
-func (dec *StreamDecoder) decodeListLiteralOnTheFly() (interface{}, error) {
-	var list []interface{}
+func (dec *StreamDecoder) decodeListLiteralOnTheFly() (any, error) {
+	var list []any
 	dec.p.nextToken() // 消费'['
 
 	for !dec.p.curTokenIs(RBRACK) && !dec.p.curTokenIs(EOF) {
@@ -273,14 +273,14 @@ func (dec *StreamDecoder) decodeListLiteralOnTheFly() (interface{}, error) {
 }
 
 // decodeBlockLiteralOnTheFly 实时解码块字面量（map[string]interface{}），并消费末尾的'}'。
-func (dec *StreamDecoder) decodeBlockLiteralOnTheFly() (interface{}, error) {
+func (dec *StreamDecoder) decodeBlockLiteralOnTheFly() (any, error) {
 	dec.p.nextToken() // 消费'{'
 	return dec.decodeBlockLiteralBodyOnTheFly()
 }
 
 // decodeBlockLiteralBodyOnTheFly 实时解码块字面量的主体部分，并消费末尾的'}'。
-func (dec *StreamDecoder) decodeBlockLiteralBodyOnTheFly() (interface{}, error) {
-	m := make(map[string]interface{})
+func (dec *StreamDecoder) decodeBlockLiteralBodyOnTheFly() (any, error) {
+	m := make(map[string]any)
 
 	for !dec.p.curTokenIs(RBRACE) && !dec.p.curTokenIs(EOF) {
 		if dec.p.curTokenIs(COMMENT) || dec.p.curTokenIs(SEMICOLON) { // 忽略注释和分号
@@ -313,8 +313,8 @@ func (dec *StreamDecoder) decodeBlockLiteralBodyOnTheFly() (interface{}, error) 
 }
 
 // decodeMapLiteralOnTheFly 实时解码map字面量（{ [key=value, ...] } 形式），并消费末尾的'}'。
-func (dec *StreamDecoder) decodeMapLiteralOnTheFly() (interface{}, error) {
-	m := make(map[string]interface{})
+func (dec *StreamDecoder) decodeMapLiteralOnTheFly() (any, error) {
+	m := make(map[string]any)
 	dec.p.nextToken() // 消费'{'
 	dec.p.nextToken() // 消费'['
 
@@ -324,7 +324,7 @@ func (dec *StreamDecoder) decodeMapLiteralOnTheFly() (interface{}, error) {
 		}
 		key := string(dec.p.curToken.Literal) // 获取键
 		dec.p.nextToken()                     // 消费标识符
-		if !dec.p.curTokenIs(ASSIGN) {               // 期望键后跟'='
+		if !dec.p.curTokenIs(ASSIGN) {        // 期望键后跟'='
 			return nil, fmt.Errorf("wanf: expected '=' after key in map literal")
 		}
 		dec.p.nextToken() // 消费赋值符号
@@ -353,7 +353,7 @@ func (dec *StreamDecoder) decodeMapLiteralOnTheFly() (interface{}, error) {
 }
 
 // evalEnvExpressionOnTheFly 实时评估env()函数表达式，并消费末尾的')'。
-func (dec *StreamDecoder) evalEnvExpressionOnTheFly() (interface{}, error) {
+func (dec *StreamDecoder) evalEnvExpressionOnTheFly() (any, error) {
 	dec.p.nextToken()              // 消费'env'
 	if !dec.p.curTokenIs(LPAREN) { // 期望'('
 		return nil, fmt.Errorf("wanf: expected '(' after env")

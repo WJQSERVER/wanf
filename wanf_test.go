@@ -9,8 +9,8 @@ import (
 
 func TestEncoder_Styles(t *testing.T) {
 	type SubBlock struct {
-		B_sub_kv string            `wanf:"b_sub_kv"`
-		A_sub_kv string            `wanf:"a_sub_kv"`
+		B_sub_kv  string            `wanf:"b_sub_kv"`
+		A_sub_kv  string            `wanf:"a_sub_kv"`
 		C_sub_map map[string]string `wanf:"c_sub_map"`
 	}
 	type Config struct {
@@ -130,7 +130,7 @@ func TestDecode_CompactFormat(t *testing.T) {
 		Server  struct {
 			Port int `wanf:"port"`
 		} `wanf:"server"`
-		IDs []interface{} `wanf:"ids"`
+		IDs []any `wanf:"ids"`
 	}
 	err := Decode([]byte(compactData), &cfg)
 	if err != nil {

@@ -20,7 +20,7 @@ func TestStreamEncoder(t *testing.T) {
 
 	testCases := []struct {
 		name       string
-		input      interface{}
+		input      any
 		opts       []EncoderOption
 		wantOutput string
 	}{
