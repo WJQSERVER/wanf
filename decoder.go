@@ -22,6 +22,11 @@ type decoderCachedField struct {
 	FieldTyp reflect.StructField
 }
 
+type cachedDecoderInfo struct {
+	fields      map[string]decoderCachedField
+	lowerFields map[string]decoderCachedField
+}
+
 type DecoderOption func(*internalDecoder)
 
 func WithBasePath(path string) DecoderOption {
@@ -111,12 +116,13 @@ func processImports(stmts []Statement, basePath string, processed map[string]boo
 	return finalStmts, nil
 }
 
-func getOrCacheDecoderFields(typ reflect.Type) map[string]decoderCachedField {
+func getOrCacheDecoderFields(typ reflect.Type) *cachedDecoderInfo {
 	if cached, ok := decoderFieldCache.Load(typ); ok {
-		return cached.(map[string]decoderCachedField)
+		return cached.(*cachedDecoderInfo)
 	}
 
 	fields := make(map[string]decoderCachedField)
+	lowerFields := make(map[string]decoderCachedField)
 	for i := 0; i < typ.NumField(); i++ {
 		field := typ.Field(i)
 		if field.PkgPath != "" {
@@ -126,25 +132,28 @@ func getOrCacheDecoderFields(typ reflect.Type) map[string]decoderCachedField {
 		tagStr := field.Tag.Get("wanf")
 		tag := parseWanfTag(tagStr, field.Name)
 
-		fields[tag.Name] = decoderCachedField{
+		cf := decoderCachedField{
 			Index:    i,
 			Tag:      tag,
 			FieldTyp: field,
 		}
+		fields[tag.Name] = cf
+		lowerFields[strings.ToLower(tag.Name)] = cf
 
 		if tagStr == "" {
 			if _, exists := fields[field.Name]; !exists {
-				fields[field.Name] = decoderCachedField{
-					Index:    i,
-					Tag:      tag,
-					FieldTyp: field,
-				}
+				fields[field.Name] = cf
+				lowerFields[strings.ToLower(field.Name)] = cf
 			}
 		}
 	}
 
-	decoderFieldCache.Store(typ, fields)
-	return fields
+	info := &cachedDecoderInfo{
+		fields:      fields,
+		lowerFields: lowerFields,
+	}
+	decoderFieldCache.Store(typ, info)
+	return info
 }
 
 func (dec *Decoder) Decode(v interface{}) error {
@@ -180,7 +189,7 @@ func (d *internalDecoder) decodeRoot(root *RootNode, rv reflect.Value) error {
 }
 
 func (d *internalDecoder) decodeAssign(stmt *AssignStatement, rv reflect.Value) error {
-	field, tag, ok := findFieldAndTag(rv, stmt.Name.Value)
+	field, tag, ok := findFieldAndTag(rv, BytesToString(stmt.Name.Value))
 	if !ok {
 		return nil
 	}
@@ -195,7 +204,7 @@ func (d *internalDecoder) decodeAssign(stmt *AssignStatement, rv reflect.Value) 
 }
 
 func (d *internalDecoder) decodeBlock(stmt *BlockStatement, rv reflect.Value) error {
-	field, _, ok := findFieldAndTag(rv, stmt.Name.Value)
+	field, _, ok := findFieldAndTag(rv, BytesToString(stmt.Name.Value))
 	if !ok {
 		return nil
 	}
@@ -330,6 +339,21 @@ func (d *internalDecoder) setField(field reflect.Value, val interface{}) error {
 	case bool:
 		if field.Kind() == reflect.Bool {
 			field.SetBool(v)
+			return nil
+		}
+	case time.Duration:
+		if field.Type() == durationType {
+			field.SetInt(int64(v))
+			return nil
+		}
+	case []interface{}:
+		if field.Kind() == reflect.Slice && field.Type().Elem().Kind() == reflect.Interface {
+			field.Set(reflect.ValueOf(v))
+			return nil
+		}
+	case map[string]interface{}:
+		if field.Kind() == reflect.Map && field.Type().Key().Kind() == reflect.String && field.Type().Elem().Kind() == reflect.Interface {
+			field.Set(reflect.ValueOf(v))
 			return nil
 		}
 	}
@@ -498,20 +522,17 @@ func (d *internalDecoder) decodeBlockToMap(body *RootNode) (map[string]interface
 	return m, nil
 }
 
-func findFieldAndTag(structVal reflect.Value, name []byte) (reflect.Value, wanfTag, bool) {
+func findFieldAndTag(structVal reflect.Value, name string) (reflect.Value, wanfTag, bool) {
 	typ := structVal.Type()
-	cachedFields := getOrCacheDecoderFields(typ)
+	info := getOrCacheDecoderFields(typ)
 
-	sName := string(name)
-	if f, ok := cachedFields[sName]; ok {
+	if f, ok := info.fields[name]; ok {
 		return structVal.Field(f.Index), f.Tag, true
 	}
 
-	lowerName := strings.ToLower(sName)
-	for _, f := range cachedFields {
-		if f.Tag.Name == f.FieldTyp.Name && strings.ToLower(f.FieldTyp.Name) == lowerName {
-			return structVal.Field(f.Index), f.Tag, true
-		}
+	lowerName := strings.ToLower(name)
+	if f, ok := info.lowerFields[lowerName]; ok {
+		return structVal.Field(f.Index), f.Tag, true
 	}
 
 	return reflect.Value{}, wanfTag{}, false
@@ -553,7 +574,7 @@ func (d *internalDecoder) setMapFromList(mapField reflect.Value, listVal interfa
 
 func (d *internalDecoder) decodeMapToStruct(sourceMap map[string]interface{}, targetStruct reflect.Value) error {
 	for key, val := range sourceMap {
-		field, _, ok := findFieldAndTag(targetStruct, []byte(key))
+		field, _, ok := findFieldAndTag(targetStruct, key)
 		if !ok {
 			continue
 		}

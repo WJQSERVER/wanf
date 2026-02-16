@@ -116,7 +116,7 @@ func (dec *StreamDecoder) decodeAssignStatement(rv reflect.Value) error {
 	}
 
 	// 查找结构体字段及其标签，使用identName的安全副本
-	field, tag, ok := findFieldAndTag(rv, []byte(identName))
+	field, tag, ok := findFieldAndTag(rv, identName)
 	if !ok {
 		// 如果未找到字段，仍然需要消费token直到下一个语句
 		// 但evalExpressionOnTheFly已经完成了这一步，所以直接返回
@@ -146,7 +146,7 @@ func (dec *StreamDecoder) decodeBlockStatement(rv reflect.Value) error {
 	dec.p.nextToken() // 消费'{'
 
 	// 查找结构体字段及其标签
-	field, _, ok := findFieldAndTag(rv, []byte(blockName))
+	field, _, ok := findFieldAndTag(rv, blockName)
 	if !ok {
 		return dec.skipBlock() // 如果未找到字段，则跳过整个块
 	}
@@ -211,15 +211,15 @@ func (dec *StreamDecoder) evalExpressionOnTheFly() (interface{}, error) {
 
 	switch dec.p.curToken.Type {
 	case INT: // 整数
-		val, err = strconv.ParseInt(string(dec.p.curToken.Literal), 0, 64)
+		val, err = strconv.ParseInt(BytesToString(dec.p.curToken.Literal), 0, 64)
 	case FLOAT: // 浮点数
-		val, err = strconv.ParseFloat(string(dec.p.curToken.Literal), 64)
+		val, err = strconv.ParseFloat(BytesToString(dec.p.curToken.Literal), 64)
 	case STRING: // 字符串
 		val = string(dec.p.curToken.Literal)
 	case BOOL: // 布尔值
-		val, err = strconv.ParseBool(string(dec.p.curToken.Literal))
+		val, err = strconv.ParseBool(BytesToString(dec.p.curToken.Literal))
 	case DUR: // 时间段 (duration)
-		val, err = time.ParseDuration(string(dec.p.curToken.Literal))
+		val, err = time.ParseDuration(BytesToString(dec.p.curToken.Literal))
 	case IDENT: // 标识符
 		if bytes.Equal(dec.p.curToken.Literal, []byte("env")) { // 如果是env()函数调用
 			return dec.evalEnvExpressionOnTheFly()

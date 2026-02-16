@@ -25,14 +25,7 @@ var encoderPool = sync.Pool{
 }
 
 // fieldCache caches processed field information for a given struct type.
-var fieldCache sync.Map // map[reflect.Type][]cachedField
-
-var fieldInfoSlicePool = sync.Pool{
-	New: func() interface{} {
-		s := make([]fieldInfo, 0, 16) // Start with a reasonable capacity
-		return &s
-	},
-}
+var fieldCache sync.Map // map[reflect.Type]*cachedStructInfo
 
 var byteSlicePool = sync.Pool{
 	New: func() interface{} {
@@ -162,35 +155,60 @@ type cachedField struct {
 	index       int
 }
 
-func (e *internalEncoder) encodeStruct(v reflect.Value, depth int) error {
-	fieldsPtr := fieldInfoSlicePool.Get().(*[]fieldInfo)
-	fields := *fieldsPtr
-	gatherFields(v, &fields)
+type cachedStructInfo struct {
+	original []cachedField
+	sorted   []cachedField
+}
 
-	if !e.opts.NoSort {
+func (e *internalEncoder) encodeStruct(v reflect.Value, depth int) error {
+	t := v.Type()
+	cached, ok := fieldCache.Load(t)
+	if !ok {
+		cached = cacheStructInfo(t)
+		fieldCache.Store(t, cached)
+	}
+	info := cached.(*cachedStructInfo)
+
+	var cachedFields []cachedField
+	if e.opts.NoSort {
+		cachedFields = info.original
+	} else {
 		switch e.opts.Style {
-		case StyleBlockSorted, StyleAllSorted:
-			if e.opts.Style == StyleAllSorted || depth > 0 {
-				sort.Slice(fields, func(i, j int) bool {
-					if fields[i].isBlock != fields[j].isBlock {
-						return !fields[i].isBlock
-					}
-					return fields[i].name < fields[j].name
-				})
+		case StyleAllSorted:
+			cachedFields = info.sorted
+		case StyleBlockSorted:
+			if depth > 0 {
+				cachedFields = info.sorted
+			} else {
+				cachedFields = info.original
 			}
-		case StyleStreaming:
+		default:
+			cachedFields = info.original
 		}
 	}
 
 	var prevWasBlockLike bool
-	for i, f := range fields {
-		e.writeSeparator(i > 0, f.isBlockLike, prevWasBlockLike, depth)
+	var first = true
+	for _, cf := range cachedFields {
+		fieldVal := v.Field(cf.index)
+		if (cf.tag.Omitempty && isZero(fieldVal)) || (fieldVal.Kind() == reflect.Map && fieldVal.Len() == 0) {
+			continue
+		}
+
+		f := fieldInfo{
+			name:        cf.name,
+			value:       fieldVal,
+			tag:         cf.tag,
+			fieldType:   cf.fieldType,
+			isBlock:     cf.isBlock,
+			isBlockLike: cf.isBlockLike,
+		}
+
+		e.writeSeparator(!first, f.isBlockLike, prevWasBlockLike, depth)
 		e.encodeField(f, depth)
 		prevWasBlockLike = f.isBlockLike
+		first = false
 	}
-
-	*fieldsPtr = fields[:0]
-	fieldInfoSlicePool.Put(fieldsPtr)
 
 	return nil
 }
@@ -282,6 +300,20 @@ func (e *internalEncoder) encodeValue(v reflect.Value, depth int) {
 }
 
 func (e *internalEncoder) encodeSlice(v reflect.Value, depth int) {
+	// 尝试常见 Slice 类型的快速路径
+	switch v.Type().Elem().Kind() {
+	case reflect.Interface:
+		if s, ok := v.Interface().([]interface{}); ok {
+			e.encodeSliceInterface(s, depth)
+			return
+		}
+	case reflect.String:
+		if s, ok := v.Interface().([]string); ok {
+			e.encodeSliceString(s, depth)
+			return
+		}
+	}
+
 	e.buf.WriteString("[")
 	l := v.Len()
 	if l == 0 {
@@ -347,12 +379,95 @@ func (e *internalEncoder) encodeInterface(i interface{}, depth int) {
 		e.buf.WriteString(val.String())
 	case map[string]interface{}:
 		e.encodeMapInterface(val, depth)
+	case map[string]string:
+		e.encodeMapStringString(val, depth)
 	case []interface{}:
 		e.encodeSliceInterface(val, depth)
+	case []string:
+		e.encodeSliceString(val, depth)
+	case int8:
+		e.buf.Write(strconv.AppendInt(e.tmpBuf[:0], int64(val), 10))
+	case int16:
+		e.buf.Write(strconv.AppendInt(e.tmpBuf[:0], int64(val), 10))
+	case uint8:
+		e.buf.Write(strconv.AppendUint(e.tmpBuf[:0], uint64(val), 10))
+	case uint16:
+		e.buf.Write(strconv.AppendUint(e.tmpBuf[:0], uint64(val), 10))
 	default:
 		// 回退到反射
 		e.encodeValue(reflect.ValueOf(i), depth)
 	}
+}
+
+func (e *internalEncoder) encodeMapStringString(m map[string]string, depth int) {
+	e.buf.WriteString("{[")
+	if len(m) == 0 {
+		e.buf.WriteString("]}")
+		return
+	}
+
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	if e.opts.Style == StyleSingleLine {
+		for i, k := range keys {
+			if i > 0 {
+				e.buf.WriteString(",")
+			}
+			e.buf.Write(StringToBytes(k))
+			e.buf.WriteString("=")
+			e.writeQuotedString(m[k])
+		}
+	} else {
+		e.buf.WriteString("\n")
+		e.indent++
+		for _, k := range keys {
+			e.writeIndent()
+			e.buf.Write(StringToBytes(k))
+			e.writeSpace()
+			e.buf.WriteString("=")
+			e.writeSpace()
+			e.writeQuotedString(m[k])
+			e.buf.WriteString(",")
+			e.buf.WriteString("\n")
+		}
+		e.indent--
+		e.writeIndent()
+	}
+	e.buf.WriteString("]}")
+}
+
+func (e *internalEncoder) encodeSliceString(s []string, depth int) {
+	e.buf.WriteString("[")
+	l := len(s)
+	if l == 0 {
+		e.buf.WriteString("]")
+		return
+	}
+
+	if e.opts.Style == StyleSingleLine {
+		for i, v := range s {
+			if i > 0 {
+				e.buf.WriteString(",")
+			}
+			e.writeQuotedString(v)
+		}
+	} else {
+		e.writeNewLine()
+		e.indent++
+		for _, v := range s {
+			e.writeIndent()
+			e.writeQuotedString(v)
+			e.buf.WriteString(",")
+			e.writeNewLine()
+		}
+		e.indent--
+		e.writeIndent()
+	}
+	e.buf.WriteString("]")
 }
 
 func (e *internalEncoder) encodeMapInterface(m map[string]interface{}, depth int) {
@@ -427,10 +542,20 @@ func (e *internalEncoder) encodeSliceInterface(s []interface{}, depth int) {
 }
 
 func (e *internalEncoder) encodeMap(v reflect.Value, depth int) {
-	// 如果是 map[string]any，使用快速路径
-	if v.Type().Key().Kind() == reflect.String && v.Type().Elem().Kind() == reflect.Interface {
-		e.encodeMapInterface(v.Interface().(map[string]interface{}), depth)
-		return
+	// 尝试常见 Map 类型的快速路径 (反射less)
+	if v.Type().Key().Kind() == reflect.String {
+		switch v.Type().Elem().Kind() {
+		case reflect.Interface:
+			if m, ok := v.Interface().(map[string]interface{}); ok {
+				e.encodeMapInterface(m, depth)
+				return
+			}
+		case reflect.String:
+			if m, ok := v.Interface().(map[string]string); ok {
+				e.encodeMapStringString(m, depth)
+				return
+			}
+		}
 	}
 
 	e.buf.WriteString("{[")
@@ -634,34 +759,54 @@ func (e *streamInternalEncoder) encodeStruct(v reflect.Value, depth int) {
 	if e.err != nil {
 		return
 	}
-	fieldsPtr := fieldInfoSlicePool.Get().(*[]fieldInfo)
-	fields := *fieldsPtr
-	gatherFields(v, &fields)
+	t := v.Type()
+	cached, ok := fieldCache.Load(t)
+	if !ok {
+		cached = cacheStructInfo(t)
+		fieldCache.Store(t, cached)
+	}
+	info := cached.(*cachedStructInfo)
 
-	if !e.opts.NoSort {
+	var cachedFields []cachedField
+	if e.opts.NoSort {
+		cachedFields = info.original
+	} else {
 		switch e.opts.Style {
-		case StyleBlockSorted, StyleAllSorted:
-			if e.opts.Style == StyleAllSorted || depth > 0 {
-				sort.Slice(fields, func(i, j int) bool {
-					if fields[i].isBlock != fields[j].isBlock {
-						return !fields[i].isBlock
-					}
-					return fields[i].name < fields[j].name
-				})
+		case StyleAllSorted:
+			cachedFields = info.sorted
+		case StyleBlockSorted:
+			if depth > 0 {
+				cachedFields = info.sorted
+			} else {
+				cachedFields = info.original
 			}
-		case StyleStreaming:
+		default:
+			cachedFields = info.original
 		}
 	}
 
 	var prevWasBlockLike bool
-	for i, f := range fields {
-		e.writeSeparator(i > 0, f.isBlockLike, prevWasBlockLike, depth)
+	var first = true
+	for _, cf := range cachedFields {
+		fieldVal := v.Field(cf.index)
+		if (cf.tag.Omitempty && isZero(fieldVal)) || (fieldVal.Kind() == reflect.Map && fieldVal.Len() == 0) {
+			continue
+		}
+
+		f := fieldInfo{
+			name:        cf.name,
+			value:       fieldVal,
+			tag:         cf.tag,
+			fieldType:   cf.fieldType,
+			isBlock:     cf.isBlock,
+			isBlockLike: cf.isBlockLike,
+		}
+
+		e.writeSeparator(!first, f.isBlockLike, prevWasBlockLike, depth)
 		e.encodeField(f, depth)
 		prevWasBlockLike = f.isBlockLike
+		first = false
 	}
-
-	*fieldsPtr = fields[:0]
-	fieldInfoSlicePool.Put(fieldsPtr)
 }
 
 func (e *streamInternalEncoder) encodeField(f fieldInfo, depth int) {
@@ -756,6 +901,20 @@ func (e *streamInternalEncoder) encodeSlice(v reflect.Value, depth int) {
 	if e.err != nil {
 		return
 	}
+	// 尝试常见 Slice 类型的快速路径
+	switch v.Type().Elem().Kind() {
+	case reflect.Interface:
+		if s, ok := v.Interface().([]interface{}); ok {
+			e.encodeSliceInterface(s, depth)
+			return
+		}
+	case reflect.String:
+		if s, ok := v.Interface().([]string); ok {
+			e.encodeSliceString(s, depth)
+			return
+		}
+	}
+
 	e.writeString("[")
 	l := v.Len()
 	if l == 0 {
@@ -821,11 +980,100 @@ func (e *streamInternalEncoder) encodeInterface(i interface{}, depth int) {
 		e.writeString(val.String())
 	case map[string]interface{}:
 		e.encodeMapInterface(val, depth)
+	case map[string]string:
+		e.encodeMapStringString(val, depth)
 	case []interface{}:
 		e.encodeSliceInterface(val, depth)
+	case []string:
+		e.encodeSliceString(val, depth)
+	case int8:
+		e.write(strconv.AppendInt(e.tmpBuf[:0], int64(val), 10))
+	case int16:
+		e.write(strconv.AppendInt(e.tmpBuf[:0], int64(val), 10))
+	case uint8:
+		e.write(strconv.AppendUint(e.tmpBuf[:0], uint64(val), 10))
+	case uint16:
+		e.write(strconv.AppendUint(e.tmpBuf[:0], uint64(val), 10))
 	default:
 		e.encodeValue(reflect.ValueOf(i), depth)
 	}
+}
+
+func (e *streamInternalEncoder) encodeMapStringString(m map[string]string, depth int) {
+	if e.err != nil {
+		return
+	}
+	e.writeString("{[")
+	if len(m) == 0 {
+		e.writeString("]}")
+		return
+	}
+
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	if e.opts.Style == StyleSingleLine {
+		for i, k := range keys {
+			if i > 0 {
+				e.writeString(",")
+			}
+			e.writeString(k)
+			e.writeString("=")
+			e.writeQuotedString(m[k])
+		}
+	} else {
+		e.writeNewLine()
+		e.indent++
+		for _, k := range keys {
+			e.writeIndent()
+			e.writeString(k)
+			e.writeSpace()
+			e.writeString("=")
+			e.writeSpace()
+			e.writeQuotedString(m[k])
+			e.writeString(",")
+			e.writeNewLine()
+		}
+		e.indent--
+		e.writeIndent()
+	}
+	e.writeString("]}")
+}
+
+func (e *streamInternalEncoder) encodeSliceString(s []string, depth int) {
+	if e.err != nil {
+		return
+	}
+	e.writeString("[")
+	l := len(s)
+	if l == 0 {
+		e.writeByte(']')
+		return
+	}
+
+	if e.opts.Style == StyleSingleLine {
+		for i, v := range s {
+			if i > 0 {
+				e.writeString(",")
+			}
+			e.writeQuotedString(v)
+		}
+	} else {
+		e.writeNewLine()
+		e.indent++
+		for _, v := range s {
+			e.writeIndent()
+			e.writeQuotedString(v)
+			e.writeString(",")
+			e.writeNewLine()
+		}
+		e.indent--
+		e.writeIndent()
+	}
+	e.writeByte(']')
 }
 
 func (e *streamInternalEncoder) encodeMapInterface(m map[string]interface{}, depth int) {
@@ -909,10 +1157,20 @@ func (e *streamInternalEncoder) encodeMap(v reflect.Value, depth int) {
 	if e.err != nil {
 		return
 	}
-	// 如果是 map[string]any，使用快速路径
-	if v.Type().Key().Kind() == reflect.String && v.Type().Elem().Kind() == reflect.Interface {
-		e.encodeMapInterface(v.Interface().(map[string]interface{}), depth)
-		return
+	// 尝试常见 Map 类型的快速路径 (反射less)
+	if v.Type().Key().Kind() == reflect.String {
+		switch v.Type().Elem().Kind() {
+		case reflect.Interface:
+			if m, ok := v.Interface().(map[string]interface{}); ok {
+				e.encodeMapInterface(m, depth)
+				return
+			}
+		case reflect.String:
+			if m, ok := v.Interface().(map[string]string); ok {
+				e.encodeMapStringString(m, depth)
+				return
+			}
+		}
 	}
 
 	e.writeString("{[")
@@ -963,38 +1221,7 @@ func (e *streamInternalEncoder) encodeMap(v reflect.Value, depth int) {
 	mapEntrySlicePool.Put(entriesPtr)
 }
 
-func gatherFields(v reflect.Value, fields *[]fieldInfo) {
-	if v.Kind() == reflect.Ptr {
-		v = v.Elem()
-	}
-	if !v.IsValid() || v.Kind() != reflect.Struct {
-		return
-	}
-	t := v.Type()
-	cached, ok := fieldCache.Load(t)
-	if !ok {
-		cached = cacheStructInfo(t)
-		fieldCache.Store(t, cached)
-	}
-
-	cachedFields := cached.([]cachedField)
-	for _, cf := range cachedFields {
-		fieldVal := v.Field(cf.index)
-		if (cf.tag.Omitempty && isZero(fieldVal)) || (fieldVal.Kind() == reflect.Map && fieldVal.Len() == 0) {
-			continue
-		}
-		*fields = append(*fields, fieldInfo{
-			name:        cf.name,
-			value:       fieldVal,
-			tag:         cf.tag,
-			fieldType:   cf.fieldType,
-			isBlock:     cf.isBlock,
-			isBlockLike: cf.isBlockLike,
-		})
-	}
-}
-
-func cacheStructInfo(t reflect.Type) []cachedField {
+func cacheStructInfo(t reflect.Type) *cachedStructInfo {
 	var cachedFields []cachedField
 	for i := 0; i < t.NumField(); i++ {
 		fieldType := t.Field(i)
@@ -1018,7 +1245,21 @@ func cacheStructInfo(t reflect.Type) []cachedField {
 			index:       i,
 		})
 	}
-	return cachedFields
+	original := make([]cachedField, len(cachedFields))
+	copy(original, cachedFields)
+
+	// 预先排序缓存的字段, 减少运行时排序开销 (反射less)
+	sort.Slice(cachedFields, func(i, j int) bool {
+		if cachedFields[i].isBlock != cachedFields[j].isBlock {
+			return !cachedFields[i].isBlock
+		}
+		return cachedFields[i].name < cachedFields[j].name
+	})
+
+	return &cachedStructInfo{
+		original: original,
+		sorted:   cachedFields,
+	}
 }
 
 func isBlockType(ft reflect.Type, tag wanfTag) bool {
@@ -1032,6 +1273,10 @@ func isBlockType(ft reflect.Type, tag wanfTag) bool {
 }
 
 func isZero(v reflect.Value) bool {
+	if !v.IsValid() {
+		return true
+	}
+
 	switch v.Kind() {
 	case reflect.String:
 		return v.Len() == 0
