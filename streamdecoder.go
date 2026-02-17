@@ -553,17 +553,23 @@ func (dec *StreamDecoder) decodeBlockLiteralBodyOnTheFly() (any, error) {
 		}
 		key := string(dec.p.curToken.Literal) // 获取键
 
-		dec.p.nextToken()              // 消费标识符
-		if !dec.p.curTokenIs(ASSIGN) { // 期望键后跟'='
-			return nil, fmt.Errorf("wanf: expected '=' after key in block literal")
+		dec.p.nextToken() // 消费标识符
+		if dec.p.curTokenIs(ASSIGN) {
+			dec.p.nextToken() // 消费赋值符号
+			val, err := dec.evalExpressionOnTheFly()
+			if err != nil {
+				return nil, err
+			}
+			m[key] = val
+		} else if dec.p.curTokenIs(LBRACE) {
+			val, err := dec.decodeBlockLiteralOnTheFly()
+			if err != nil {
+				return nil, err
+			}
+			m[key] = val
+		} else {
+			return nil, fmt.Errorf("wanf: expected '=' or '{' after key %q in block literal (line %d)", key, dec.p.curToken.Line)
 		}
-		dec.p.nextToken() // 消费赋值符号
-
-		val, err := dec.evalExpressionOnTheFly() // 评估值
-		if err != nil {
-			return nil, err
-		}
-		m[key] = val // 设置map键值对
 		// 此处不需要nextToken，因为evalExpressionOnTheFly已经处理了。
 	}
 	if !dec.p.curTokenIs(RBRACE) { // 块字面量未闭合
