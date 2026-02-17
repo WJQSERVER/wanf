@@ -76,6 +76,10 @@ func (l *streamLexer) newToken(tokenType TokenType, ch byte, line, column int) T
 	return Token{Type: tokenType, Literal: singleCharByteSlices[ch], Line: line, Column: column}
 }
 
+func (l *streamLexer) IsPersistent() bool {
+	return false
+}
+
 func (l *streamLexer) NextToken() Token {
 	var tok Token
 	l.skipWhitespace()

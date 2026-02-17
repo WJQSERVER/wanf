@@ -44,6 +44,10 @@ func (l *Lexer) readChar() {
 	l.column++
 }
 
+func (l *Lexer) IsPersistent() bool {
+	return true
+}
+
 func (l *Lexer) NextToken() Token {
 	var tok Token
 	l.skipWhitespace()
