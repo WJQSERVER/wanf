@@ -14,7 +14,6 @@ import (
 	"unicode/utf8"
 )
 
-
 var encoderPool = sync.Pool{
 	New: func() any {
 		return &internalEncoder{
@@ -38,12 +37,6 @@ type mapEntry struct {
 	keyStr string
 	value  reflect.Value
 }
-
-type mapEntries []mapEntry
-
-func (s mapEntries) Len() int           { return len(s) }
-func (s mapEntries) Less(i, j int) bool { return s[i].keyStr < s[j].keyStr }
-func (s mapEntries) Swap(i, j int)      { s[i], s[j] = s[j], s[i] }
 
 var mapEntrySlicePool = sync.Pool{
 	New: func() any {
@@ -90,12 +83,44 @@ func putEncoder(e *internalEncoder) {
 }
 
 func Marshal(v any) ([]byte, error) {
-	var buf bytes.Buffer
-	encoder := NewEncoder(&buf)
-	if err := encoder.Encode(v); err != nil {
-		return nil, err
+	e := getEncoder()
+	defer putEncoder(e)
+
+	e.opts = FormatOptions{
+		Style:      StyleBlockSorted,
+		EmptyLines: true,
 	}
-	return buf.Bytes(), nil
+
+	tmpBufPtr := byteSlicePool.Get().(*[]byte)
+	e.tmpBuf = *tmpBufPtr
+	defer func() {
+		*tmpBufPtr = (*tmpBufPtr)[:0]
+		byteSlicePool.Put(tmpBufPtr)
+	}()
+
+	rv := reflect.ValueOf(v)
+	if rv.Kind() == reflect.Pointer {
+		rv = rv.Elem()
+	}
+	if !rv.IsValid() {
+		return nil, fmt.Errorf("wanf: can only encode valid values")
+	}
+
+	if rv.Kind() == reflect.Struct {
+		if err := e.encodeStruct(rv, 0); err != nil {
+			return nil, err
+		}
+	} else {
+		e.encodeValue(rv, 0)
+	}
+
+	if e.opts.Style != StyleSingleLine && e.buf.Len() > 0 {
+		e.buf.WriteString("\n")
+	}
+
+	res := make([]byte, e.buf.Len())
+	copy(res, e.buf.Bytes())
+	return res, nil
 }
 
 type EncoderOption func(*FormatOptions)
@@ -144,11 +169,15 @@ func (enc *Encoder) Encode(v any) error {
 	if rv.Kind() == reflect.Pointer {
 		rv = rv.Elem()
 	}
-	if !rv.IsValid() || rv.Kind() != reflect.Struct {
-		return fmt.Errorf("wanf: can only encode a non-nil struct")
+	if !rv.IsValid() {
+		return fmt.Errorf("wanf: can only encode valid values")
 	}
-	if err := enc.e.encodeStruct(rv, 0); err != nil {
-		return err
+	if rv.Kind() == reflect.Struct {
+		if err := enc.e.encodeStruct(rv, 0); err != nil {
+			return err
+		}
+	} else {
+		enc.e.encodeValue(rv, 0)
 	}
 	if enc.e.opts.Style != StyleSingleLine && enc.e.buf.Len() > 0 {
 		enc.e.buf.WriteString("\n")
@@ -209,8 +238,8 @@ func (e *internalEncoder) encodeStruct(v reflect.Value, depth int) error {
 	var prevWasBlockLike bool
 	var first = true
 	for _, cf := range cachedFields {
-		fieldVal := v.Field(cf.index)
-		if (cf.tag.Omitempty && isZero(fieldVal)) || (fieldVal.Kind() == reflect.Map && fieldVal.Len() == 0) {
+		fv := v.Field(cf.index)
+		if (cf.tag.Omitempty && isZero(fv)) || (fv.Kind() == reflect.Map && fv.Len() == 0) {
 			continue
 		}
 
@@ -256,7 +285,7 @@ func (e *internalEncoder) encodeValue(v reflect.Value, depth int) {
 
 	// 优先处理 interface{} 类型，使用 switch 枚举提高性能
 	if v.Kind() == reflect.Interface && !v.IsNil() {
-		e.encodeInterface(v.Interface(), depth)
+		e.encodeValue(v.Elem(), depth)
 		return
 	}
 
@@ -311,20 +340,6 @@ func (e *internalEncoder) encodeValue(v reflect.Value, depth int) {
 }
 
 func (e *internalEncoder) encodeSlice(v reflect.Value, depth int) {
-	// 尝试常见 Slice 类型的快速路径
-	switch v.Type().Elem().Kind() {
-	case reflect.Interface:
-		if s, ok := v.Interface().([]any); ok {
-			e.encodeSliceInterface(s, depth)
-			return
-		}
-	case reflect.String:
-		if s, ok := v.Interface().([]string); ok {
-			e.encodeSliceString(s, depth)
-			return
-		}
-	}
-
 	e.buf.WriteString("[")
 	l := v.Len()
 	if l == 0 {
@@ -333,7 +348,7 @@ func (e *internalEncoder) encodeSlice(v reflect.Value, depth int) {
 	}
 
 	if e.opts.Style == StyleSingleLine {
-		for i := range l {
+		for i := 0; i < l; i++ {
 			if i > 0 {
 				e.buf.WriteString(",")
 			}
@@ -342,7 +357,7 @@ func (e *internalEncoder) encodeSlice(v reflect.Value, depth int) {
 	} else {
 		e.writeNewLine()
 		e.indent++
-		for i := range l {
+		for i := 0; i < l; i++ {
 			e.writeIndent()
 			e.encodeValue(v.Index(i), depth)
 			e.buf.WriteString(",")
@@ -562,38 +577,50 @@ func (e *internalEncoder) encodeSliceInterface(s []any, depth int) {
 	e.buf.WriteString("]")
 }
 
-func (e *internalEncoder) encodeMap(v reflect.Value, depth int) {
-	// 尝试常见 Map 类型的快速路径 (反射less)
-	if v.Type().Key().Kind() == reflect.String {
-		switch v.Type().Elem().Kind() {
-		case reflect.Interface:
-			if m, ok := v.Interface().(map[string]any); ok {
-				e.encodeMapInterface(m, depth)
-				return
-			}
-		case reflect.String:
-			if m, ok := v.Interface().(map[string]string); ok {
-				e.encodeMapStringString(m, depth)
-				return
-			}
+func quickSortMapEntries(entries []mapEntry) {
+	if len(entries) < 2 {
+		return
+	}
+	pivot := entries[len(entries)/2].keyStr
+	left, right := 0, len(entries)-1
+	for left <= right {
+		for entries[left].keyStr < pivot {
+			left++
+		}
+		for entries[right].keyStr > pivot {
+			right--
+		}
+		if left <= right {
+			entries[left], entries[right] = entries[right], entries[left]
+			left++
+			right--
 		}
 	}
+	if right > 0 {
+		quickSortMapEntries(entries[:right+1])
+	}
+	if left < len(entries) {
+		quickSortMapEntries(entries[left:])
+	}
+}
 
+func (e *internalEncoder) encodeMap(v reflect.Value, depth int) {
 	e.buf.WriteString("{[")
-	if v.Len() == 0 {
+	l := v.Len()
+	if l == 0 {
 		e.buf.WriteString("]}")
 		return
 	}
 
 	entriesPtr := mapEntrySlicePool.Get().(*[]mapEntry)
-	entries := *entriesPtr
+	entries := (*entriesPtr)[:0]
 	iter := v.MapRange()
 	for iter.Next() {
 		k := iter.Key()
 		entries = append(entries, mapEntry{key: k, keyStr: k.String(), value: iter.Value()})
 	}
 
-	sort.Sort(mapEntries(entries))
+	quickSortMapEntries(entries)
 
 	if e.opts.Style == StyleSingleLine {
 		for i, entry := range entries {
@@ -770,10 +797,14 @@ func (e *streamInternalEncoder) encode(v any) error {
 	if rv.Kind() == reflect.Pointer {
 		rv = rv.Elem()
 	}
-	if !rv.IsValid() || rv.Kind() != reflect.Struct {
-		return fmt.Errorf("wanf: can only encode a non-nil struct")
+	if !rv.IsValid() {
+		return fmt.Errorf("wanf: can only encode valid values")
 	}
-	e.encodeStruct(rv, 0)
+	if rv.Kind() == reflect.Struct {
+		e.encodeStruct(rv, 0)
+	} else {
+		e.encodeValue(rv, 0)
+	}
 	if e.opts.Style != StyleSingleLine {
 		e.writeString("\n")
 	}
@@ -813,8 +844,8 @@ func (e *streamInternalEncoder) encodeStruct(v reflect.Value, depth int) {
 	var prevWasBlockLike bool
 	var first = true
 	for _, cf := range cachedFields {
-		fieldVal := v.Field(cf.index)
-		if (cf.tag.Omitempty && isZero(fieldVal)) || (fieldVal.Kind() == reflect.Map && fieldVal.Len() == 0) {
+		fv := v.Field(cf.index)
+		if (cf.tag.Omitempty && isZero(fv)) || (fv.Kind() == reflect.Map && fv.Len() == 0) {
 			continue
 		}
 
@@ -860,7 +891,7 @@ func (e *streamInternalEncoder) encodeValue(v reflect.Value, depth int) {
 	}
 
 	if v.Kind() == reflect.Interface && !v.IsNil() {
-		e.encodeInterface(v.Interface(), depth)
+		e.encodeValue(v.Elem(), depth)
 		return
 	}
 
@@ -918,20 +949,6 @@ func (e *streamInternalEncoder) encodeSlice(v reflect.Value, depth int) {
 	if e.err != nil {
 		return
 	}
-	// 尝试常见 Slice 类型的快速路径
-	switch v.Type().Elem().Kind() {
-	case reflect.Interface:
-		if s, ok := v.Interface().([]any); ok {
-			e.encodeSliceInterface(s, depth)
-			return
-		}
-	case reflect.String:
-		if s, ok := v.Interface().([]string); ok {
-			e.encodeSliceString(s, depth)
-			return
-		}
-	}
-
 	e.writeString("[")
 	l := v.Len()
 	if l == 0 {
@@ -940,7 +957,7 @@ func (e *streamInternalEncoder) encodeSlice(v reflect.Value, depth int) {
 	}
 
 	if e.opts.Style == StyleSingleLine {
-		for i := range l {
+		for i := 0; i < l; i++ {
 			if i > 0 {
 				e.writeString(",")
 			}
@@ -949,7 +966,7 @@ func (e *streamInternalEncoder) encodeSlice(v reflect.Value, depth int) {
 	} else {
 		e.writeNewLine()
 		e.indent++
-		for i := range l {
+		for i := 0; i < l; i++ {
 			e.writeIndent()
 			e.encodeValue(v.Index(i), depth)
 			e.writeString(",")
@@ -1184,37 +1201,22 @@ func (e *streamInternalEncoder) encodeMap(v reflect.Value, depth int) {
 	if e.err != nil {
 		return
 	}
-	// 尝试常见 Map 类型的快速路径 (反射less)
-	if v.Type().Key().Kind() == reflect.String {
-		switch v.Type().Elem().Kind() {
-		case reflect.Interface:
-			if m, ok := v.Interface().(map[string]any); ok {
-				e.encodeMapInterface(m, depth)
-				return
-			}
-		case reflect.String:
-			if m, ok := v.Interface().(map[string]string); ok {
-				e.encodeMapStringString(m, depth)
-				return
-			}
-		}
-	}
-
 	e.writeString("{[")
-	if v.Len() == 0 {
+	l := v.Len()
+	if l == 0 {
 		e.writeString("]}")
 		return
 	}
 
 	entriesPtr := mapEntrySlicePool.Get().(*[]mapEntry)
-	entries := *entriesPtr
+	entries := (*entriesPtr)[:0]
 	iter := v.MapRange()
 	for iter.Next() {
 		k := iter.Key()
 		entries = append(entries, mapEntry{key: k, keyStr: k.String(), value: iter.Value()})
 	}
 
-	sort.Sort(mapEntries(entries))
+	quickSortMapEntries(entries)
 
 	if e.opts.Style == StyleSingleLine {
 		for i, entry := range entries {
@@ -1247,6 +1249,16 @@ func (e *streamInternalEncoder) encodeMap(v reflect.Value, depth int) {
 		*entriesPtr = entries[:0]
 		mapEntrySlicePool.Put(entriesPtr)
 	}
+}
+
+func isBlockType(ft reflect.Type, tag wanfTag) bool {
+	if ft.Kind() == reflect.Pointer {
+		ft = ft.Elem()
+	}
+	// 只有结构体是块. 映射被视为值.
+	// Only structs are blocks. Maps are treated as values.
+	isStruct := ft.Kind() == reflect.Struct && ft.Name() != "Duration"
+	return isStruct
 }
 
 func cacheStructInfo(t reflect.Type) *cachedStructInfo {
@@ -1289,16 +1301,6 @@ func cacheStructInfo(t reflect.Type) *cachedStructInfo {
 		original: original,
 		sorted:   cachedFields,
 	}
-}
-
-func isBlockType(ft reflect.Type, tag wanfTag) bool {
-	if ft.Kind() == reflect.Pointer {
-		ft = ft.Elem()
-	}
-	// 只有结构体是块. 映射被视为值.
-	// Only structs are blocks. Maps are treated as values.
-	isStruct := ft.Kind() == reflect.Struct && ft.Name() != "Duration"
-	return isStruct
 }
 
 func isZero(v reflect.Value) bool {

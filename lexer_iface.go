@@ -5,4 +5,5 @@ package wanf
 // will satisfy this interface, allowing them to be used by the Parser interchangeably.
 type lexer interface {
 	NextToken() Token
+	IsPersistent() bool
 }

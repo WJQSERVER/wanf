@@ -1,12 +1,13 @@
 package wanf
 
 import (
-	"bytes"
 	"unicode"
 )
 
 var singleCharByteSlices [256][]byte
 var isIdentTable [256]bool
+var tokenDollarLbraceLiteral = []byte("${")
+var unclosedBlockCommentLiteral = []byte("unclosed block comment")
 
 func init() {
 	for i := range 256 {
@@ -33,15 +34,26 @@ func NewLexer(input []byte) *Lexer {
 	return l
 }
 
+func putLexer(l *Lexer) {
+	// Lexer 已经不再使用池化，保持此函数为空以兼容已有的 Decode 实现
+}
+
 func (l *Lexer) readChar() {
-	if l.readPosition >= len(l.input) {
+	p := l.readPosition
+	if p >= len(l.input) {
 		l.ch = 0
+		l.position = p
+		l.readPosition = p + 1
 	} else {
-		l.ch = l.input[l.readPosition]
+		l.ch = l.input[p]
+		l.position = p
+		l.readPosition = p + 1
 	}
-	l.position = l.readPosition
-	l.readPosition++
 	l.column++
+}
+
+func (l *Lexer) IsPersistent() bool {
+	return true
 }
 
 func (l *Lexer) NextToken() Token {
@@ -50,23 +62,41 @@ func (l *Lexer) NextToken() Token {
 	line, col := l.line, l.column
 	switch l.ch {
 	case '=':
-		tok = l.newToken(ASSIGN, l.ch, line, col)
+		tok = Token{Type: ASSIGN, Literal: singleCharByteSlices['='], Line: line, Column: col}
+		l.readChar()
+		return tok
 	case ',':
-		tok = l.newToken(COMMA, l.ch, line, col)
+		tok = Token{Type: COMMA, Literal: singleCharByteSlices[','], Line: line, Column: col}
+		l.readChar()
+		return tok
 	case ';':
-		tok = l.newToken(SEMICOLON, l.ch, line, col)
+		tok = Token{Type: SEMICOLON, Literal: singleCharByteSlices[';'], Line: line, Column: col}
+		l.readChar()
+		return tok
 	case '{':
-		tok = l.newToken(LBRACE, l.ch, line, col)
+		tok = Token{Type: LBRACE, Literal: singleCharByteSlices['{'], Line: line, Column: col}
+		l.readChar()
+		return tok
 	case '}':
-		tok = l.newToken(RBRACE, l.ch, line, col)
+		tok = Token{Type: RBRACE, Literal: singleCharByteSlices['}'], Line: line, Column: col}
+		l.readChar()
+		return tok
 	case '[':
-		tok = l.newToken(LBRACK, l.ch, line, col)
+		tok = Token{Type: LBRACK, Literal: singleCharByteSlices['['], Line: line, Column: col}
+		l.readChar()
+		return tok
 	case ']':
-		tok = l.newToken(RBRACK, l.ch, line, col)
+		tok = Token{Type: RBRACK, Literal: singleCharByteSlices[']'], Line: line, Column: col}
+		l.readChar()
+		return tok
 	case '(':
-		tok = l.newToken(LPAREN, l.ch, line, col)
+		tok = Token{Type: LPAREN, Literal: singleCharByteSlices['('], Line: line, Column: col}
+		l.readChar()
+		return tok
 	case ')':
-		tok = l.newToken(RPAREN, l.ch, line, col)
+		tok = Token{Type: RPAREN, Literal: singleCharByteSlices[')'], Line: line, Column: col}
+		l.readChar()
+		return tok
 	case '#':
 		tok.Type = ILLEGAL_COMMENT
 		tok.Literal = l.readUntilEndOfLine()
@@ -76,7 +106,7 @@ func (l *Lexer) NextToken() Token {
 	case '$':
 		if l.peekChar() == '{' {
 			l.readChar()
-			tok = Token{Type: DOLLAR_LBRACE, Literal: []byte("${"), Line: line, Column: col}
+			tok = Token{Type: DOLLAR_LBRACE, Literal: tokenDollarLbraceLiteral, Line: line, Column: col}
 		} else {
 			tok = l.newToken(ILLEGAL, l.ch, line, col)
 		}
@@ -96,7 +126,7 @@ func (l *Lexer) NextToken() Token {
 			literal, ok := l.readMultiLineComment()
 			if !ok {
 				tok.Type = ILLEGAL
-				tok.Literal = []byte("unclosed block comment")
+				tok.Literal = unclosedBlockCommentLiteral
 			} else {
 				tok.Type = COMMENT
 				tok.Literal = literal
@@ -123,28 +153,59 @@ func (l *Lexer) NextToken() Token {
 			return tok
 		} else if l.ch >= '0' && l.ch <= '9' {
 			startPos := l.position
-			literal := l.readNumber()
+			isFloat := false
+			p := l.position
+			for p < len(l.input) {
+				c := l.input[p]
+				if c >= '0' && c <= '9' {
+					p++
+				} else if c == '.' && !isFloat {
+					isFloat = true
+					p++
+				} else {
+					break
+				}
+			}
+			l.skipBytes(p - l.position)
 			if isDurationUnit(l.ch, l.peekChar()) {
 				for {
 					l.readDurationSuffix()
 					if !((l.ch >= '0' && l.ch <= '9') || l.ch == '.') {
 						break
 					}
-					numLen, hasUnit := l.peekNumberWithUnit()
-					if !hasUnit {
+					p = l.position
+					for p < len(l.input) {
+						c := l.input[p]
+						if (c >= '0' && c <= '9') || c == '.' {
+							p++
+						} else {
+							break
+						}
+					}
+					numLen := p - l.position
+					var next byte
+					if p < len(l.input) {
+						next = l.input[p]
+					}
+					var next2 byte
+					if p+1 < len(l.input) {
+						next2 = l.input[p+1]
+					}
+					if isDurationUnit(next, next2) {
+						l.skipBytes(numLen)
+					} else {
 						break
 					}
-					l.skipBytes(numLen)
 				}
 				tok.Type = DUR
 				tok.Literal = l.input[startPos:l.position]
 			} else {
-				if bytes.Contains(literal, []byte(".")) {
+				if isFloat {
 					tok.Type = FLOAT
 				} else {
 					tok.Type = INT
 				}
-				tok.Literal = literal
+				tok.Literal = l.input[startPos:l.position]
 			}
 			tok.Line = line
 			tok.Column = col
@@ -171,75 +232,49 @@ func (l *Lexer) readDurationSuffix() {
 	l.readChar()
 }
 
-func (l *Lexer) peekNumberWithUnit() (int, bool) {
-	p := l.position
-	isFloat := false
-	start := p
-	for p < len(l.input) {
-		ch := l.input[p]
-		if ch >= '0' && ch <= '9' {
-			p++
-		} else if ch == '.' && !isFloat {
-			isFloat = true
-			p++
-		} else {
-			break
-		}
-	}
-
-	if p == start || p >= len(l.input) {
-		return 0, false
-	}
-
-	var next byte
-	if p+1 < len(l.input) {
-		next = l.input[p+1]
-	}
-	if isDurationUnit(l.input[p], next) {
-		return p - start, true
-	}
-	return 0, false
-}
 
 func (l *Lexer) skipBytes(n int) {
 	l.position += n
 	l.readPosition = l.position + 1
 	l.column += n
-	if l.position >= len(l.input) {
-		l.ch = 0
-	} else {
-		l.ch = l.input[l.position]
-	}
-}
-func (l *Lexer) skipWhitespace() {
 	p := l.position
-	for p < len(l.input) {
-		ch := l.input[p]
-		if ch == ' ' || ch == '\t' || ch == '\r' {
-			p++
-			l.column++
-		} else if ch == '\n' {
-			p++
-			l.line++
-			l.column = 0
-		} else {
-			break
-		}
-	}
-	l.position = p
-	l.readPosition = p + 1
 	if p >= len(l.input) {
 		l.ch = 0
 	} else {
 		l.ch = l.input[p]
 	}
 }
-func (l *Lexer) readSingleLineComment() []byte {
-	position := l.position
-	for l.ch != '\n' && l.ch != 0 {
-		l.readChar()
+func (l *Lexer) skipWhitespace() {
+	p := l.position
+	for p < len(l.input) {
+		ch := l.input[p]
+		switch ch {
+		case ' ', '\t', '\r':
+			p++
+			l.column++
+		case '\n':
+			p++
+			l.line++
+			l.column = 0
+		default:
+			l.position = p
+			l.readPosition = p + 1
+			l.ch = ch
+			return
+		}
 	}
-	return l.input[position:l.position]
+	l.position = p
+	l.readPosition = p + 1
+	l.ch = 0
+}
+func (l *Lexer) readSingleLineComment() []byte {
+	start := l.position
+	p := l.position
+	for p < len(l.input) && l.input[p] != '\n' {
+		p++
+	}
+	l.skipBytes(p - l.position)
+	return l.input[start:p]
 }
 
 func (l *Lexer) readMultiLineComment() ([]byte, bool) {
@@ -267,7 +302,17 @@ func (l *Lexer) readMultiLineComment() ([]byte, bool) {
 func (l *Lexer) readIdentifier() []byte {
 	start := l.position
 	p := l.position
-	for p < len(l.input) && isIdentifierChar(l.input[p]) {
+	for p < len(l.input) {
+		ch := l.input[p]
+		if ch < 128 {
+			if !isIdentTable[ch] {
+				break
+			}
+		} else {
+			if !isIdentifierCharNonASCII(ch) {
+				break
+			}
+		}
 		p++
 	}
 
@@ -282,55 +327,26 @@ func (l *Lexer) readIdentifier() []byte {
 	}
 	return l.input[start:p]
 }
-func (l *Lexer) readNumber() []byte {
-	start := l.position
-	p := l.position
-	isFloat := false
-	for p < len(l.input) {
-		ch := l.input[p]
-		if ch >= '0' && ch <= '9' {
-			p++
-		} else if ch == '.' && !isFloat {
-			isFloat = true
-			p++
-		} else {
-			break
-		}
-	}
-	n := p - start
-	l.position = p
-	l.readPosition = p + 1
-	l.column += n
-	if p >= len(l.input) {
-		l.ch = 0
-	} else {
-		l.ch = l.input[p]
-	}
-	return l.input[start:p]
-}
 func (l *Lexer) readString() []byte {
 	quote := l.ch
-	position := l.position + 1
-	for {
-		l.readChar()
-		if l.ch == quote || l.ch == 0 {
-			break
-		}
+	p := l.readPosition
+	start := p
+	for p < len(l.input) && l.input[p] != quote {
+		p++
 	}
-	literal := l.input[position:l.position]
-	l.readChar()
+	literal := l.input[start:p]
+	l.skipBytes(p - l.position + 1)
 	return literal
 }
 
 func (l *Lexer) readUntilEndOfLine() []byte {
-	position := l.position
-	for {
-		if l.ch == '\n' || l.ch == '\r' || l.ch == 0 {
-			break
-		}
-		l.readChar()
+	start := l.position
+	p := l.position
+	for p < len(l.input) && l.input[p] != '\n' && l.input[p] != '\r' {
+		p++
 	}
-	return l.input[position:l.position]
+	l.skipBytes(p - l.position)
+	return l.input[start:p]
 }
 func (l *Lexer) peekChar() byte {
 	if l.readPosition >= len(l.input) {
@@ -357,23 +373,17 @@ func isIdentifierStart(ch byte) bool {
 	return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || ch == '_'
 }
 func isIdentifierChar(ch byte) bool {
-	// ASCII 快速路径
-	if ch < 128 {
-		return isIdentTable[ch]
-	}
+	return isIdentTable[ch]
+}
 
-	r := rune(ch) // 将byte转换为rune，以便使用unicode包的函数
-
+func isIdentifierCharNonASCII(ch byte) bool {
+	r := rune(ch)
 	if unicode.IsLetter(r) || unicode.IsDigit(r) {
 		return true
 	}
-
-	// 排除 WANF 中的分隔符和特殊符号，这些不能作为标识符的一部分
 	switch ch {
 	case '=', ',', ';', '{', '}', '[', ']', '(', ')', '"', '\'', '`', '/', '*', '$', '#':
 		return false
 	}
-
-	return unicode.IsPunct(r) || // 检查是否为Unicode标点符号
-		unicode.IsSymbol(r) // 检查是否为Unicode通用符号
+	return unicode.IsPunct(r) || unicode.IsSymbol(r)
 }

@@ -189,7 +189,7 @@ func (d *internalDecoder) decodeRoot(root *RootNode, rv reflect.Value) error {
 }
 
 func (d *internalDecoder) decodeAssign(stmt *AssignStatement, rv reflect.Value) error {
-	field, tag, ok := findFieldAndTag(rv, BytesToString(stmt.Name.Value))
+	field, tag, ok := findFieldAndTag(rv, stmt.Name.Value)
 	if !ok {
 		return nil
 	}
@@ -204,7 +204,7 @@ func (d *internalDecoder) decodeAssign(stmt *AssignStatement, rv reflect.Value) 
 }
 
 func (d *internalDecoder) decodeBlock(stmt *BlockStatement, rv reflect.Value) error {
-	field, _, ok := findFieldAndTag(rv, BytesToString(stmt.Name.Value))
+	field, _, ok := findFieldAndTag(rv, stmt.Name.Value)
 	if !ok {
 		return nil
 	}
@@ -585,11 +585,12 @@ func (d *internalDecoder) decodeBlockToMap(body *RootNode) (map[string]any, erro
 	return m, nil
 }
 
-func findFieldAndTag(structVal reflect.Value, name string) (reflect.Value, wanfTag, bool) {
+func findFieldAndTag(structVal reflect.Value, name []byte) (reflect.Value, wanfTag, bool) {
 	typ := structVal.Type()
 	info := getOrCacheDecoderFields(typ)
 
-	if f, ok := info.fields[name]; ok {
+	nameStr := BytesToString(name)
+	if f, ok := info.fields[nameStr]; ok {
 		return structVal.Field(f.Index), f.Tag, true
 	}
 
@@ -623,7 +624,7 @@ func findFieldAndTag(structVal reflect.Value, name string) (reflect.Value, wanfT
 			return structVal.Field(f.Index), f.Tag, true
 		}
 	} else {
-		lowerName := strings.ToLower(name)
+		lowerName := strings.ToLower(nameStr)
 		if f, ok := info.lowerFields[lowerName]; ok {
 			return structVal.Field(f.Index), f.Tag, true
 		}
@@ -668,7 +669,7 @@ func (d *internalDecoder) setMapFromList(mapField reflect.Value, listVal any, ke
 
 func (d *internalDecoder) decodeMapToStruct(sourceMap map[string]any, targetStruct reflect.Value) error {
 	for key, val := range sourceMap {
-		field, _, ok := findFieldAndTag(targetStruct, key)
+		field, _, ok := findFieldAndTag(targetStruct, StringToBytes(key))
 		if !ok {
 			continue
 		}

@@ -58,6 +58,7 @@ func Decode(data []byte, v any) error {
 	// 使用池化的 StreamDecoder 逻辑
 	// 但我们希望使用高性能的 Lexer 而不是 streamLexer
 	l := NewLexer(data)
+	defer putLexer(l)
 	dec := newStreamDecoderInternal(l)
 	defer putStreamDecoder(dec)
 

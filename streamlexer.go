@@ -14,7 +14,7 @@ var dot = []byte{'.'}
 var streamLexerPool = sync.Pool{
 	New: func() any {
 		return &streamLexer{
-			r: bufio.NewReader(bytes.NewReader([]byte{})),
+			r: bufio.NewReaderSize(bytes.NewReader([]byte{}), 4096),
 		}
 	},
 }
@@ -76,6 +76,10 @@ func (l *streamLexer) newToken(tokenType TokenType, ch byte, line, column int) T
 	return Token{Type: tokenType, Literal: singleCharByteSlices[ch], Line: line, Column: column}
 }
 
+func (l *streamLexer) IsPersistent() bool {
+	return false
+}
+
 func (l *streamLexer) NextToken() Token {
 	var tok Token
 	l.skipWhitespace()
@@ -108,7 +112,7 @@ func (l *streamLexer) NextToken() Token {
 	case '$':
 		if l.peekChar() == '{' {
 			l.readChar()
-			tok = Token{Type: DOLLAR_LBRACE, Literal: []byte("${"), Line: line, Column: col}
+			tok = Token{Type: DOLLAR_LBRACE, Literal: tokenDollarLbraceLiteral, Line: line, Column: col}
 		} else {
 			tok = l.newToken(ILLEGAL, l.ch, line, col)
 		}
@@ -129,7 +133,7 @@ func (l *streamLexer) NextToken() Token {
 			literal, ok := l.readMultiLineComment()
 			if !ok {
 				tok.Type = ILLEGAL
-				tok.Literal = []byte("unclosed block comment")
+				tok.Literal = unclosedBlockCommentLiteral
 			} else {
 				tok.Type = COMMENT
 				tok.Literal = literal
@@ -338,18 +342,22 @@ func (l *streamLexer) readMultiLineComment() ([]byte, bool) {
 }
 
 func (l *streamLexer) readIdentifier() []byte {
+
 	buf := l.activeBuffer()
 	for {
-		if l.ch < 128 {
-			if !isIdentTable[l.ch] {
+		ch := l.ch
+		if ch < 128 {
+			if !isIdentTable[ch] {
 				break
 			}
-		} else if !isIdentifierChar(l.ch) {
-			break
+		} else {
+			if !isIdentifierCharNonASCII(ch) {
+				break
+			}
 		}
-		buf.WriteByte(l.ch)
+		buf.WriteByte(ch)
 
-		// 尝试批量读取以减少 readChar 调用
+		// 尝试批量读取以减少 ReadByte 调用
 		peek, _ := l.r.Peek(32)
 		i := 0
 		for i < len(peek) {
@@ -359,7 +367,7 @@ func (l *streamLexer) readIdentifier() []byte {
 					i++
 					continue
 				}
-			} else if isIdentifierChar(c) {
+			} else if isIdentifierCharNonASCII(c) {
 				i++
 				continue
 			}
@@ -369,8 +377,17 @@ func (l *streamLexer) readIdentifier() []byte {
 			buf.Write(peek[:i])
 			l.r.Discard(i)
 			l.column += i
+			// 更新当前字符
+			b, err := l.r.ReadByte()
+			if err != nil {
+				l.ch = 0
+			} else {
+				l.ch = b
+			}
+			l.column++
+		} else {
+			l.readChar()
 		}
-		l.readChar()
 	}
 	return buf.Bytes()
 }
