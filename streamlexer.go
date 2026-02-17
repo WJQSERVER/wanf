@@ -268,34 +268,34 @@ func (l *streamLexer) peekNextNumberHasUnit() bool {
 
 func (l *streamLexer) skipWhitespace() {
 	for {
-		if l.ch == ' ' || l.ch == '\t' || l.ch == '\r' {
+		switch l.ch {
+		case ' ', '\t', '\r':
 			l.column++
-		} else if l.ch == '\n' {
+		case '\n':
 			l.line++
 			l.column = 0
-		} else {
-			break
+		default:
+			return
 		}
 
-		peek, _ := l.r.Peek(32)
-		i := 0
-		for i < len(peek) {
-			c := peek[i]
-			if c == ' ' || c == '\t' || c == '\r' {
+		// 使用 ReadByte 循环代替复杂的 Peek 逻辑，通常更快
+		for {
+			b, err := l.r.ReadByte()
+			if err != nil {
+				l.ch = 0
+				return
+			}
+			l.ch = b
+			switch l.ch {
+			case ' ', '\t', '\r':
 				l.column++
-				i++
-			} else if c == '\n' {
+			case '\n':
 				l.line++
 				l.column = 0
-				i++
-			} else {
-				break
+			default:
+				return
 			}
 		}
-		if i > 0 {
-			l.r.Discard(i)
-		}
-		l.readChar()
 	}
 }
 
@@ -339,13 +339,31 @@ func (l *streamLexer) readMultiLineComment() ([]byte, bool) {
 
 func (l *streamLexer) readIdentifier() []byte {
 	buf := l.activeBuffer()
-	for isIdentifierChar(l.ch) {
+	for {
+		if l.ch < 128 {
+			if !isIdentTable[l.ch] {
+				break
+			}
+		} else if !isIdentifierChar(l.ch) {
+			break
+		}
 		buf.WriteByte(l.ch)
+
 		// 尝试批量读取以减少 readChar 调用
 		peek, _ := l.r.Peek(32)
 		i := 0
-		for i < len(peek) && isIdentifierChar(peek[i]) {
-			i++
+		for i < len(peek) {
+			c := peek[i]
+			if c < 128 {
+				if isIdentTable[c] {
+					i++
+					continue
+				}
+			} else if isIdentifierChar(c) {
+				i++
+				continue
+			}
+			break
 		}
 		if i > 0 {
 			buf.Write(peek[:i])

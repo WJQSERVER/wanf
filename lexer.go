@@ -6,10 +6,15 @@ import (
 )
 
 var singleCharByteSlices [256][]byte
+var isIdentTable [256]bool
 
 func init() {
 	for i := range 256 {
 		singleCharByteSlices[i] = []byte{byte(i)}
+		ch := byte(i)
+		if (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_' {
+			isIdentTable[i] = true
+		}
 	}
 }
 
@@ -353,11 +358,8 @@ func isIdentifierStart(ch byte) bool {
 }
 func isIdentifierChar(ch byte) bool {
 	// ASCII 快速路径
-	if (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_' {
-		return true
-	}
 	if ch < 128 {
-		return false
+		return isIdentTable[ch]
 	}
 
 	r := rune(ch) // 将byte转换为rune，以便使用unicode包的函数
