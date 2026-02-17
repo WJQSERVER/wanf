@@ -19,6 +19,7 @@ type StreamDecoder struct {
 	d         *internalDecoder // 内部解码器
 	p         *Parser          // 语法解析器
 	processed map[string]bool  // 已处理的导入路径
+	stringMap map[string]string // 字符串缓存
 }
 
 var streamDecoderPool = sync.Pool{
@@ -26,6 +27,7 @@ var streamDecoderPool = sync.Pool{
 		return &StreamDecoder{
 			d:         &internalDecoder{vars: make(map[string]any)},
 			processed: make(map[string]bool),
+			stringMap: make(map[string]string),
 		}
 	},
 }
@@ -53,6 +55,13 @@ func newStreamDecoderInternal(l lexer, opts ...DecoderOption) *StreamDecoder {
 		delete(dec.processed, k)
 	}
 
+	// 清理字符串缓存以防过大
+	if len(dec.stringMap) > 1024 {
+		for k := range dec.stringMap {
+			delete(dec.stringMap, k)
+		}
+	}
+
 	if dec.p == nil {
 		dec.p = NewParser(l)
 	} else {
@@ -77,7 +86,14 @@ func (dec *StreamDecoder) safeString(b []byte) string {
 	if dec.p.l.IsPersistent() {
 		return BytesToString(b)
 	}
-	return string(b)
+	if s, ok := dec.stringMap[BytesToString(b)]; ok {
+		return s
+	}
+	s := string(b)
+	if len(s) <= 32 { // 仅缓存短字符串
+		dec.stringMap[s] = s
+	}
+	return s
 }
 
 func putStreamDecoder(dec *StreamDecoder) {
@@ -271,11 +287,11 @@ func (dec *StreamDecoder) decodeAssignStatement(rv reflect.Value) error {
 }
 
 func (dec *StreamDecoder) decodeValueTo(field reflect.Value) error {
-	if field.Kind() == reflect.Pointer {
+	for field.Kind() == reflect.Pointer {
 		if field.IsNil() {
 			field.Set(reflect.New(field.Type().Elem()))
 		}
-		return dec.decodeValueTo(field.Elem())
+		field = field.Elem()
 	}
 
 	switch dec.p.curToken.Type {
