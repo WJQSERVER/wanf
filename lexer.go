@@ -2,6 +2,7 @@ package wanf
 
 import (
 	"bytes"
+	"sync"
 	"unicode"
 )
 
@@ -27,10 +28,26 @@ type Lexer struct {
 	column       int
 }
 
+var lexerPool = sync.Pool{
+	New: func() any {
+		return &Lexer{}
+	},
+}
+
 func NewLexer(input []byte) *Lexer {
-	l := &Lexer{input: input, line: 1}
+	l := lexerPool.Get().(*Lexer)
+	l.input = input
+	l.position = 0
+	l.readPosition = 0
+	l.line = 1
+	l.column = 0
 	l.readChar()
 	return l
+}
+
+func putLexer(l *Lexer) {
+	l.input = nil
+	lexerPool.Put(l)
 }
 
 func (l *Lexer) readChar() {
