@@ -416,6 +416,9 @@ func (d *internalDecoder) setField(field reflect.Value, val any) error {
 			field.Set(reflect.ValueOf(v))
 			return nil
 		}
+		if field.Kind() == reflect.Struct {
+			return d.decodeMapToStruct(v, field)
+		}
 	}
 
 	rv := reflect.ValueOf(val)

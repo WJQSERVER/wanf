@@ -61,6 +61,62 @@ func TestDecodeMapAny(t *testing.T) {
 	}
 }
 
+type OrdinalConfig struct {
+	Strategy string `json:"strategy" wanf:"strategy"`
+	Routes   []Route
+}
+
+type Route struct {
+	TargetID string `json:"target_id" wanf:"target_id"`
+}
+
+type UserNode struct {
+	ID      string        `json:"id" wanf:"id"`
+	Ordinal OrdinalConfig `json:"ordinal" wanf:"ordinal"`
+}
+
+type UserData struct {
+	Nodes map[string]UserNode `json:"nodes" wanf:"nodes"`
+}
+
+func TestUserReproduction(t *testing.T) {
+	wanfData := `
+nodes = {
+	test = {
+		id = "test"
+		ordinal {
+			strategy = "auto"
+			routes = [
+				{ target_id = "next" }
+			]
+		}
+	}
+}
+`
+	var data UserData
+	err := Decode([]byte(wanfData), &data)
+	if err != nil {
+		t.Fatalf("Error: %v", err)
+	}
+
+	// Verification
+	if node, ok := data.Nodes["test"]; ok {
+		if node.ID != "test" {
+			t.Errorf("expected node ID 'test', got %q", node.ID)
+		}
+		if node.Ordinal.Strategy != "auto" {
+			t.Errorf("expected ordinal strategy 'auto', got %q", node.Ordinal.Strategy)
+		}
+		if len(node.Ordinal.Routes) != 1 {
+			t.Errorf("expected 1 route, got %d", len(node.Ordinal.Routes))
+		} else if node.Ordinal.Routes[0].TargetID != "next" {
+			t.Errorf("expected route target_id 'next', got %q", node.Ordinal.Routes[0].TargetID)
+		}
+	} else {
+		t.Errorf("node 'test' not found in map")
+	}
+}
+
 func TestEncodeMapAny(t *testing.T) {
 	type Config struct {
 		Data map[string]any `wanf:"data"`
