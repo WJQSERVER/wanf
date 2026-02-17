@@ -228,6 +228,16 @@ func (dec *StreamDecoder) decodeAssignStatement(rv reflect.Value) error {
 	}
 	dec.p.nextToken() // 消费赋值符号
 
+	if rv.Kind() == reflect.Map && rv.Type().Key().Kind() == reflect.String {
+		elemType := rv.Type().Elem()
+		newElem := reflect.New(elemType).Elem()
+		if err := dec.decodeValueTo(newElem); err != nil {
+			return err
+		}
+		rv.SetMapIndex(reflect.ValueOf(identName), newElem)
+		return nil
+	}
+
 	// 查找结构体字段及其标签
 	field, tag, ok := findFieldAndTag(rv, identName)
 	if !ok {
@@ -321,6 +331,21 @@ func (dec *StreamDecoder) decodeValueTo(field reflect.Value) error {
 			}
 			return dec.d.setField(field, val)
 		}
+		if field.Kind() == reflect.Map && field.Type().Key().Kind() == reflect.String {
+			dec.p.nextToken() // {
+			if field.IsNil() {
+				field.Set(reflect.MakeMap(field.Type()))
+			}
+			err := dec.decodeBody(field)
+			if err != nil && err != io.EOF {
+				return err
+			}
+			if !dec.p.curTokenIs(RBRACE) {
+				return fmt.Errorf("wanf: expected '}' after map block on line %d", dec.p.curToken.Line)
+			}
+			dec.p.nextToken()
+			return nil
+		}
 		if field.Kind() == reflect.Struct {
 			dec.p.nextToken() // {
 			err := dec.decodeBody(field)
@@ -384,6 +409,25 @@ func (dec *StreamDecoder) decodeBlockStatement(rv reflect.Value) error {
 		return fmt.Errorf("wanf: expected '{' after block identifier on line %d", dec.p.curToken.Line)
 	}
 	dec.p.nextToken() // 消费'{'
+
+	if rv.Kind() == reflect.Map && rv.Type().Key().Kind() == reflect.String {
+		elemType := rv.Type().Elem()
+		newElem := reflect.New(elemType).Elem()
+		if err := dec.decodeBody(newElem); err != nil && err != io.EOF {
+			return err
+		}
+		if !dec.p.curTokenIs(RBRACE) {
+			return fmt.Errorf("wanf: expected '}' to close block %q on line %d", blockName, dec.p.curToken.Line)
+		}
+		dec.p.nextToken()
+
+		key := blockName
+		if label != "" {
+			key = label
+		}
+		rv.SetMapIndex(reflect.ValueOf(key), newElem)
+		return nil
+	}
 
 	// 查找结构体字段及其标签
 	field, _, ok := findFieldAndTag(rv, blockName)
