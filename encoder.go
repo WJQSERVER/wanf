@@ -40,7 +40,7 @@ type mapEntry struct {
 
 var mapEntrySlicePool = sync.Pool{
 	New: func() any {
-		s := make([]mapEntry, 0, 8) // Start with capacity for 8 map entries
+		s := make([]mapEntry, 0, 16) // Start with capacity for 16 map entries
 		return &s
 	},
 }
@@ -284,8 +284,11 @@ func (e *internalEncoder) encodeValue(v reflect.Value, depth int) {
 	}
 
 	// 优先处理 interface{} 类型，使用 switch 枚举提高性能
-	if v.Kind() == reflect.Interface && !v.IsNil() {
-		e.encodeValue(v.Elem(), depth)
+	if v.Kind() == reflect.Interface {
+		if v.IsNil() {
+			return
+		}
+		e.encodeInterface(v.Interface(), depth)
 		return
 	}
 
@@ -335,6 +338,14 @@ func (e *internalEncoder) encodeValue(v reflect.Value, depth int) {
 		e.writeIndent()
 		e.buf.WriteString("}")
 	case reflect.Map:
+		if v.Type() == mapStringAnyType {
+			e.encodeMapInterface(v.Interface().(map[string]any), depth)
+			return
+		}
+		if v.Type() == mapStringStringType {
+			e.encodeMapStringString(v.Interface().(map[string]string), depth)
+			return
+		}
 		e.encodeMap(v, depth)
 	}
 }
@@ -613,14 +624,21 @@ func (e *internalEncoder) encodeMap(v reflect.Value, depth int) {
 	}
 
 	entriesPtr := mapEntrySlicePool.Get().(*[]mapEntry)
-	entries := (*entriesPtr)[:0]
+	entries := *entriesPtr
+	if cap(entries) < l {
+		entries = make([]mapEntry, 0, l)
+	}
+	entries = entries[:0]
+
 	iter := v.MapRange()
 	for iter.Next() {
 		k := iter.Key()
 		entries = append(entries, mapEntry{key: k, keyStr: k.String(), value: iter.Value()})
 	}
 
-	quickSortMapEntries(entries)
+	if len(entries) > 1 {
+		quickSortMapEntries(entries)
+	}
 
 	if e.opts.Style == StyleSingleLine {
 		for i, entry := range entries {
@@ -693,9 +711,25 @@ func (e *streamInternalEncoder) writeQuotedString(s string) {
 	if e.err != nil {
 		return
 	}
+	i := 0
+	for i < len(s) {
+		b := s[i]
+		if b < 0x20 || b == '\\' || b == '"' || b >= utf8.RuneSelf {
+			break
+		}
+		i++
+	}
+	if i == len(s) {
+		e.writeByte('"')
+		e.writeString(s)
+		e.writeByte('"')
+		return
+	}
+
 	e.writeByte('"')
-	start := 0
-	for i := 0; i < len(s); {
+	e.writeString(s[:i])
+	start := i
+	for i < len(s) {
 		if b := s[i]; b < utf8.RuneSelf {
 			if 0x20 <= b && b != '\\' && b != '"' {
 				i++
@@ -742,9 +776,25 @@ func (e *streamInternalEncoder) writeQuotedString(s string) {
 }
 
 func (e *internalEncoder) writeQuotedString(s string) {
+	i := 0
+	for i < len(s) {
+		b := s[i]
+		if b < 0x20 || b == '\\' || b == '"' || b >= utf8.RuneSelf {
+			break
+		}
+		i++
+	}
+	if i == len(s) {
+		e.buf.WriteByte('"')
+		e.buf.WriteString(s)
+		e.buf.WriteByte('"')
+		return
+	}
+
 	e.buf.WriteByte('"')
-	start := 0
-	for i := 0; i < len(s); {
+	e.buf.WriteString(s[:i])
+	start := i
+	for i < len(s) {
 		if b := s[i]; b < utf8.RuneSelf {
 			if 0x20 <= b && b != '\\' && b != '"' {
 				i++
@@ -890,8 +940,11 @@ func (e *streamInternalEncoder) encodeValue(v reflect.Value, depth int) {
 		return
 	}
 
-	if v.Kind() == reflect.Interface && !v.IsNil() {
-		e.encodeValue(v.Elem(), depth)
+	if v.Kind() == reflect.Interface {
+		if v.IsNil() {
+			return
+		}
+		e.encodeInterface(v.Interface(), depth)
 		return
 	}
 
@@ -941,6 +994,14 @@ func (e *streamInternalEncoder) encodeValue(v reflect.Value, depth int) {
 		e.writeIndent()
 		e.writeByte('}')
 	case reflect.Map:
+		if v.Type() == mapStringAnyType {
+			e.encodeMapInterface(v.Interface().(map[string]any), depth)
+			return
+		}
+		if v.Type() == mapStringStringType {
+			e.encodeMapStringString(v.Interface().(map[string]string), depth)
+			return
+		}
 		e.encodeMap(v, depth)
 	}
 }
@@ -1209,14 +1270,21 @@ func (e *streamInternalEncoder) encodeMap(v reflect.Value, depth int) {
 	}
 
 	entriesPtr := mapEntrySlicePool.Get().(*[]mapEntry)
-	entries := (*entriesPtr)[:0]
+	entries := *entriesPtr
+	if cap(entries) < l {
+		entries = make([]mapEntry, 0, l)
+	}
+	entries = entries[:0]
+
 	iter := v.MapRange()
 	for iter.Next() {
 		k := iter.Key()
 		entries = append(entries, mapEntry{key: k, keyStr: k.String(), value: iter.Value()})
 	}
 
-	quickSortMapEntries(entries)
+	if len(entries) > 1 {
+		quickSortMapEntries(entries)
+	}
 
 	if e.opts.Style == StyleSingleLine {
 		for i, entry := range entries {
@@ -1307,24 +1375,7 @@ func isZero(v reflect.Value) bool {
 	if !v.IsValid() {
 		return true
 	}
-
-	switch v.Kind() {
-	case reflect.String:
-		return v.Len() == 0
-	case reflect.Bool:
-		return !v.Bool()
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		return v.Int() == 0
-	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
-		return v.Uint() == 0
-	case reflect.Float32, reflect.Float64:
-		return v.Float() == 0
-	case reflect.Interface, reflect.Pointer:
-		return v.IsNil()
-	case reflect.Slice, reflect.Map, reflect.Array:
-		return v.Len() == 0
-	}
-	return false
+	return v.IsZero()
 }
 
 // --- Streaming Encoder ---

@@ -6,7 +6,11 @@ import (
 	"unsafe"
 )
 
-var durationType = reflect.TypeFor[time.Duration]()
+var (
+	durationType        = reflect.TypeFor[time.Duration]()
+	mapStringAnyType    = reflect.TypeOf(map[string]any(nil))
+	mapStringStringType = reflect.TypeOf(map[string]string(nil))
+)
 
 // StringToBytes 将字符串转换为字节切片, 不进行内存分配.
 // 更多详情, 请参见 https://github.com/golang/go/issues/53003#issuecomment-1140276077.
