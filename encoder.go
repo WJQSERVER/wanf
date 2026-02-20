@@ -201,6 +201,8 @@ type cachedField struct {
 	isBlock     bool
 	isBlockLike bool
 	index       int
+	kind        reflect.Kind
+	isCollection bool
 }
 
 type cachedStructInfo struct {
@@ -239,7 +241,14 @@ func (e *internalEncoder) encodeStruct(v reflect.Value, depth int) error {
 	var first = true
 	for _, cf := range cachedFields {
 		fv := v.Field(cf.index)
-		if (cf.tag.Omitempty && isZero(fv)) || (fv.Kind() == reflect.Map && fv.Len() == 0) {
+		if cf.tag.Omitempty {
+			if isZero(fv) {
+				continue
+			}
+			if cf.isCollection && fv.Len() == 0 {
+				continue
+			}
+		} else if cf.kind == reflect.Map && fv.Len() == 0 {
 			continue
 		}
 
@@ -895,7 +904,14 @@ func (e *streamInternalEncoder) encodeStruct(v reflect.Value, depth int) {
 	var first = true
 	for _, cf := range cachedFields {
 		fv := v.Field(cf.index)
-		if (cf.tag.Omitempty && isZero(fv)) || (fv.Kind() == reflect.Map && fv.Len() == 0) {
+		if cf.tag.Omitempty {
+			if isZero(fv) {
+				continue
+			}
+			if cf.isCollection && fv.Len() == 0 {
+				continue
+			}
+		} else if cf.kind == reflect.Map && fv.Len() == 0 {
 			continue
 		}
 
@@ -1343,15 +1359,19 @@ func cacheStructInfo(t reflect.Type) *cachedStructInfo {
 			ft = ft.Elem()
 		}
 		isBlock := isBlockType(ft, tagInfo)
-		isBlockLike := isBlock || ft.Kind() == reflect.Map || ft.Kind() == reflect.Slice
+		fk := ft.Kind()
+		fkind := fieldType.Type.Kind()
+		isBlockLike := isBlock || fk == reflect.Map || fk == reflect.Slice
 		cachedFields = append(cachedFields, cachedField{
-			name:        tagInfo.Name,
-			nameBytes:   []byte(tagInfo.Name),
-			tag:         tagInfo,
-			fieldType:   fieldType,
-			isBlock:     isBlock,
-			isBlockLike: isBlockLike,
-			index:       i,
+			name:         tagInfo.Name,
+			nameBytes:    []byte(tagInfo.Name),
+			tag:          tagInfo,
+			fieldType:    fieldType,
+			isBlock:      isBlock,
+			isBlockLike:  isBlockLike,
+			index:        i,
+			kind:         fkind,
+			isCollection: fkind == reflect.Map || fkind == reflect.Slice,
 		})
 	}
 	original := make([]cachedField, len(cachedFields))
