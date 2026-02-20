@@ -5,6 +5,18 @@ import (
 	"sync"
 )
 
+var (
+	assignLit    = []byte("=")
+	lbraceLit    = []byte("{")
+	rbraceLit    = []byte("}")
+	lbrackLit    = []byte("[")
+	rbrackLit    = []byte("]")
+	commaLit     = []byte(",")
+	semicolonLit = []byte(";")
+	importLit    = []byte("import")
+	varLit       = []byte("var")
+)
+
 type NeoLexer struct {
 	input []byte
 	pos   int
@@ -70,25 +82,25 @@ func (l *NeoLexer) nextToken() Token {
 	switch ch {
 	case '=':
 		l.advance()
-		return Token{Type: ASSIGN, Literal: []byte{'='}, Line: startLine, Column: startCol}
+		return Token{Type: ASSIGN, Literal: assignLit, Line: startLine, Column: startCol}
 	case '{':
 		l.advance()
-		return Token{Type: LBRACE, Literal: []byte{'{'}, Line: startLine, Column: startCol}
+		return Token{Type: LBRACE, Literal: lbraceLit, Line: startLine, Column: startCol}
 	case '}':
 		l.advance()
-		return Token{Type: RBRACE, Literal: []byte{'}'}, Line: startLine, Column: startCol}
+		return Token{Type: RBRACE, Literal: rbraceLit, Line: startLine, Column: startCol}
 	case '[':
 		l.advance()
-		return Token{Type: LBRACK, Literal: []byte{'['}, Line: startLine, Column: startCol}
+		return Token{Type: LBRACK, Literal: lbrackLit, Line: startLine, Column: startCol}
 	case ']':
 		l.advance()
-		return Token{Type: RBRACK, Literal: []byte{']'}, Line: startLine, Column: startCol}
+		return Token{Type: RBRACK, Literal: rbrackLit, Line: startLine, Column: startCol}
 	case ',':
 		l.advance()
-		return Token{Type: COMMA, Literal: []byte{','}, Line: startLine, Column: startCol}
+		return Token{Type: COMMA, Literal: commaLit, Line: startLine, Column: startCol}
 	case ';':
 		l.advance()
-		return Token{Type: SEMICOLON, Literal: []byte{';'}, Line: startLine, Column: startCol}
+		return Token{Type: SEMICOLON, Literal: semicolonLit, Line: startLine, Column: startCol}
 	case '"', '\'':
 		return l.readString(ch)
 	case '`':
@@ -175,9 +187,6 @@ func (l *NeoLexer) getLiteral(startPos int) []byte {
 	if !l.isStreaming {
 		return l.input[startPos:l.pos]
 	}
-	// For streaming, we should ideally use litBuf but we'd need to copy it
-	// if we want to return it.
-	// To minimize allocations, Neo can return a volatile slice of litBuf.
 	return l.litBuf
 }
 
@@ -194,12 +203,11 @@ func (l *NeoLexer) readIdentifierOrKeyword() Token {
 
 	lit := l.getLiteral(startPos)
 
-	// Check keywords
 	if len(lit) == 6 && BytesToString(lit) == "import" {
-		return Token{Type: IMPORT, Literal: []byte("import"), Line: startLine, Column: startCol}
+		return Token{Type: IMPORT, Literal: importLit, Line: startLine, Column: startCol}
 	}
 	if len(lit) == 3 && BytesToString(lit) == "var" {
-		return Token{Type: VAR, Literal: []byte("var"), Line: startLine, Column: startCol}
+		return Token{Type: VAR, Literal: varLit, Line: startLine, Column: startCol}
 	}
 
 	return Token{Type: IDENT, Literal: lit, Line: startLine, Column: startCol}
