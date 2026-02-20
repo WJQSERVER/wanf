@@ -40,7 +40,7 @@ log {
 | **浮点数**   | `value = 99.5`                           | `float32`, `float64`   | 标准浮点数表示。                           |
 | **布尔值**   | `value = true`                           | `bool`                 | 必须是小写的 `true` 或 `false`。           |
 | **字符串**   | `value = "hello"`                        | `string`               | 由双引号或单引号包裹的单行文本。           |
-| **持续时间** | `value = 5s`                             | `time.Duration`        | 由数字和时间单位 (`ns`, `us`, `ms`, `s`, `m`, `h`) 组成。 |
+| **持续时间** | `value = 5s`                             | `time.Duration`        | 由数字和时间单位 (`ns`, `us`, `ms`, `µs`, `s`, `m`, `h`) 组成的序列 (例如 `1h30m`, `500µs`)。 |
 | **多行字符串** | `value = \`line 1\nline 2\``             | `string`               | 由反引号包裹, 保留所有内部格式和换行。     |
 
 #### **3. 语法核心: 块、列表与分隔符**
@@ -136,7 +136,7 @@ host = "localhost"; port = 8080
 
 *   **声明**: `var identifier = value`
 *   **引用**: `${identifier}`
-*   **流式解码器限制**: 为了实现最高的性能和最低的内存占用，`StreamDecoder`（流式解码器）**不支持** `var` 语句。如果在流式模式下遇到 `var` 声明，解码器将报告一个错误。
+*   **流式解码器支持**: `StreamDecoder`（流式解码器）原生支持 `var` 语句，允许在流式处理过程中进行变量定义和引用。
 
 ```go
 // WANF 配置
@@ -172,7 +172,7 @@ database {
 *   **声明**: `import "path/to/another.wanf"`
 *   **路径规则**: 路径是相对于当前文件的。
 *   **作用域规则**: 被导入文件中的变量不会污染导入它的文件。
-*   **流式解码器限制**: 为了实现最高的性能和最低的内存占用，`StreamDecoder`（流式解码器）**不支持** `import` 语句。如果在流式模式下遇到 `import` 声明，解码器将报告一个错误。
+*   **流式解码器支持**: `StreamDecoder`（流式解码器）原生支持 `import` 语句，能够处理跨文件的配置导入，并内置了循环检测机制。
 
 ```go
 // main.wanf
@@ -199,6 +199,10 @@ database {
 WANF 解析器通过 Go 结构体字段的 `wanf` 标签来确定映射关系。
 
 *   **基础映射**: `wanf:"name"` 将字段与 WANF 文件中名为 `name` 的键或块进行关联。
+
+* **忽略空值 (omitempty)**: `wanf:"name,omitempty"`
+    当字段值为其类型的零值 (如空字符串、0、`nil` 指针) 或长度为 0 的集合 (如空 `slice` 或 `map`) 时, 编码器将在输出中忽略该字段。
+    注意: 出于兼容性考虑, 即使未显式设置 `omitempty`, 长度为 0 的 `map` 也会被忽略。
 
 *   **列表到 Map 的映射**: `wanf:"services,key=name"`
     此标签指示解析器:
