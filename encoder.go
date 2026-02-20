@@ -241,14 +241,19 @@ func (e *internalEncoder) encodeStruct(v reflect.Value, depth int) error {
 	var first = true
 	for _, cf := range cachedFields {
 		fv := v.Field(cf.index)
+		val := fv
+		if val.Kind() == reflect.Pointer {
+			if val.IsNil() {
+				continue
+			}
+			val = val.Elem()
+		}
+
 		if cf.tag.Omitempty {
-			if isZero(fv) {
+			if (cf.isCollection && val.Len() == 0) || (!cf.isCollection && val.IsZero()) {
 				continue
 			}
-			if cf.isCollection && fv.Len() == 0 {
-				continue
-			}
-		} else if cf.kind == reflect.Map && fv.Len() == 0 {
+		} else if cf.kind == reflect.Map && val.Len() == 0 {
 			continue
 		}
 
@@ -267,6 +272,12 @@ func (e *internalEncoder) encodeField(cf cachedField, v reflect.Value, depth int
 	e.writeSpace()
 
 	fv := v.Field(cf.index)
+	for fv.Kind() == reflect.Pointer {
+		if fv.IsNil() {
+			return
+		}
+		fv = fv.Elem()
+	}
 	if cf.isBlock {
 		if fv.Kind() == reflect.Map {
 			e.encodeMap(fv, depth+1)
@@ -904,14 +915,19 @@ func (e *streamInternalEncoder) encodeStruct(v reflect.Value, depth int) {
 	var first = true
 	for _, cf := range cachedFields {
 		fv := v.Field(cf.index)
+		val := fv
+		if val.Kind() == reflect.Pointer {
+			if val.IsNil() {
+				continue
+			}
+			val = val.Elem()
+		}
+
 		if cf.tag.Omitempty {
-			if isZero(fv) {
+			if (cf.isCollection && val.Len() == 0) || (!cf.isCollection && val.IsZero()) {
 				continue
 			}
-			if cf.isCollection && fv.Len() == 0 {
-				continue
-			}
-		} else if cf.kind == reflect.Map && fv.Len() == 0 {
+		} else if cf.kind == reflect.Map && val.Len() == 0 {
 			continue
 		}
 
@@ -931,6 +947,12 @@ func (e *streamInternalEncoder) encodeField(cf cachedField, v reflect.Value, dep
 	e.writeSpace()
 
 	fv := v.Field(cf.index)
+	for fv.Kind() == reflect.Pointer {
+		if fv.IsNil() {
+			return
+		}
+		fv = fv.Elem()
+	}
 	if cf.isBlock {
 		if fv.Kind() == reflect.Map {
 			e.encodeMap(fv, depth+1)
@@ -1360,7 +1382,6 @@ func cacheStructInfo(t reflect.Type) *cachedStructInfo {
 		}
 		isBlock := isBlockType(ft, tagInfo)
 		fk := ft.Kind()
-		fkind := fieldType.Type.Kind()
 		isBlockLike := isBlock || fk == reflect.Map || fk == reflect.Slice
 		cachedFields = append(cachedFields, cachedField{
 			name:         tagInfo.Name,
@@ -1370,8 +1391,8 @@ func cacheStructInfo(t reflect.Type) *cachedStructInfo {
 			isBlock:      isBlock,
 			isBlockLike:  isBlockLike,
 			index:        i,
-			kind:         fkind,
-			isCollection: fkind == reflect.Map || fkind == reflect.Slice,
+			kind:         fk,
+			isCollection: fk == reflect.Map || fk == reflect.Slice,
 		})
 	}
 	original := make([]cachedField, len(cachedFields))
