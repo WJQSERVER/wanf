@@ -46,3 +46,26 @@ WANF 广泛使用 `sync.Pool` 来重用临时对象，以减轻垃圾回收（GC
 为了防止类似指针解引用崩溃等问题的回归，项目在 `test/` 目录下维护了一系列针对已知历史问题的回归测试：
 - `repro_panic_test.go`: 检查指针集合（Slice, Map）的 `omitempty` 逻辑。
 - `repro_struct_ptr_panic_test.go`: 检查嵌套结构体指针的编码安全性。
+
+## 7. Neo - 极速编解码器 (Ultra-Fast Codec)
+
+Neo 是 WANF 库中的一个实验性编解码器，旨在提供原生流式、近乎 0 分配的极致性能。
+
+### 7.1 Neo 的核心优化
+- **Unsafe 字段访问**: 使用 `unsafe.Offset` 提前缓存字段偏移量，完全绕过 `reflect.Value.Set/Get` 的开销。
+- **0 分配编码**: `NeoEncoder` 实现了在编码过程中的 **0 分配**。
+- **低分配解码**: `NeoDecoder` 结合了 `NeoLexer` 的池化技术，将解码分配降至极低。
+- **原生流式**: 完美支持 `io.Reader` 和 `io.Writer`。
+
+### 7.2 使用方法
+```go
+// 编码
+enc := wanf.NewNeoEncoder(writer)
+enc.Encode(cfg)
+enc.Close()
+
+// 解码
+dec := wanf.NewNeoDecoder(reader)
+dec.Decode(&cfg)
+dec.Close()
+```

@@ -11,8 +11,8 @@ import (
 var benchmarkWanfData, _ = os.ReadFile("testfile/example.wanf")
 var benchmarkStreamWanfData, _ = os.ReadFile("testfile/benchmark_stream.wanf")
 
-// BenchmarkLexer measures the performance of tokenizing a wanf file.
-func BenchmarkLexer(b *testing.B) {
+// BenchmarkLexer_Base measures the performance of tokenizing a wanf file.
+func BenchmarkLexer_Base(b *testing.B) {
 	if benchmarkWanfData == nil {
 		b.Skip("Cannot read benchmark data file")
 	}
@@ -28,8 +28,27 @@ func BenchmarkLexer(b *testing.B) {
 	}
 }
 
-// BenchmarkParser measures the performance of parsing a wanf file (lexing + parsing).
-func BenchmarkParser(b *testing.B) {
+func BenchmarkLexer_Stream(b *testing.B) {
+	if benchmarkWanfData == nil {
+		b.Skip("Cannot read benchmark data file")
+	}
+	reader := bytes.NewReader(benchmarkWanfData)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		reader.Reset(benchmarkWanfData)
+		l := newStreamLexer(reader)
+		for {
+			tok := l.NextToken()
+			if tok.Type == EOF {
+				break
+			}
+		}
+		putStreamLexer(l)
+	}
+}
+
+// BenchmarkParser_Base measures the performance of parsing a wanf file (lexing + parsing).
+func BenchmarkParser_Base(b *testing.B) {
 	if benchmarkWanfData == nil {
 		b.Skip("Cannot read benchmark data file")
 	}
@@ -41,8 +60,8 @@ func BenchmarkParser(b *testing.B) {
 	}
 }
 
-// BenchmarkFormat measures the end-to-end performance of linting and formatting.
-func BenchmarkFormat(b *testing.B) {
+// BenchmarkFormat_Base measures the end-to-end performance of linting and formatting.
+func BenchmarkFormat_Base(b *testing.B) {
 	if benchmarkWanfData == nil {
 		b.Skip("Cannot read benchmark data file")
 	}
@@ -85,8 +104,8 @@ type benchmarkConfig struct {
 	} `wanf:"middleware"`
 }
 
-// BenchmarkDecode measures the performance of decoding a wanf file into a Go struct.
-func BenchmarkDecode(b *testing.B) {
+// BenchmarkDecodeComplex_Base measures the performance of decoding a wanf file into a Go struct.
+func BenchmarkDecodeComplex_Base(b *testing.B) {
 	if benchmarkWanfData == nil {
 		b.Skip("Cannot read benchmark data file")
 	}
@@ -104,19 +123,32 @@ func BenchmarkDecode(b *testing.B) {
 
 	for i := 0; i < b.N; i++ {
 		var cfg benchmarkConfig
-		// The Decode function is what we are testing.
-		// With the cache, this should be much faster on subsequent runs.
 		_ = Decode(benchmarkWanfData, &cfg)
 	}
 }
 
-// BenchmarkEncode measures the performance of encoding a Go struct into wanf format.
-func BenchmarkEncode(b *testing.B) {
+func BenchmarkDecodeComplex_Stream(b *testing.B) {
 	if benchmarkWanfData == nil {
 		b.Skip("Cannot read benchmark data file")
 	}
-	// Create a representative config struct by decoding the benchmark file once.
-	// This ensures we are encoding the same data that we decode.
+	reader := bytes.NewReader(benchmarkWanfData)
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		var cfg benchmarkConfig
+		reader.Reset(benchmarkWanfData)
+		dec, _ := NewStreamDecoder(reader)
+		_ = dec.Decode(&cfg)
+		dec.Close()
+	}
+}
+
+// BenchmarkEncodeComplex_Base measures the performance of encoding a Go struct into wanf format.
+func BenchmarkEncodeComplex_Base(b *testing.B) {
+	if benchmarkWanfData == nil {
+		b.Skip("Cannot read benchmark data file")
+	}
 	var config benchmarkConfig
 	dec, err := NewDecoder(bytes.NewReader(benchmarkWanfData), WithBasePath("testfile"))
 	if err != nil {
@@ -135,9 +167,30 @@ func BenchmarkEncode(b *testing.B) {
 	}
 }
 
-// BenchmarkDecode_SimpleFile measures the performance of the standard decoder on simple data.
-// This provides a direct comparison to BenchmarkStreamDecode.
-func BenchmarkDecode_SimpleFile(b *testing.B) {
+func BenchmarkEncodeComplex_Stream(b *testing.B) {
+	if benchmarkWanfData == nil {
+		b.Skip("Cannot read benchmark data file")
+	}
+	var config benchmarkConfig
+	dec, err := NewDecoder(bytes.NewReader(benchmarkWanfData), WithBasePath("testfile"))
+	if err != nil {
+		b.Fatalf("Failed to create decoder for benchmark setup: %v", err)
+	}
+	err = dec.Decode(&config)
+	if err != nil {
+		b.Fatalf("Failed to decode benchmark data for encoder setup: %v", err)
+	}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		enc := NewStreamEncoder(io.Discard)
+		_ = enc.Encode(&config)
+	}
+}
+
+func BenchmarkDecodeSimple_Base(b *testing.B) {
 	if benchmarkStreamWanfData == nil {
 		b.Skip("Cannot read stream benchmark data file")
 	}
@@ -153,57 +206,58 @@ func BenchmarkDecode_SimpleFile(b *testing.B) {
 	}
 }
 
-// BenchmarkStreamDecode 测试流式解码器的性能.
-func BenchmarkStreamDecode(b *testing.B) {
+func BenchmarkDecodeSimple_Stream(b *testing.B) {
 	if benchmarkStreamWanfData == nil {
 		b.Skip("Cannot read stream benchmark data file")
 	}
+	reader := bytes.NewReader(benchmarkStreamWanfData)
 	b.ReportAllocs()
 	b.ResetTimer()
 
-	reader := bytes.NewReader(benchmarkStreamWanfData)
-
 	for i := 0; i < b.N; i++ {
 		var cfg benchmarkConfig
-		reader.Seek(0, io.SeekStart)
+		reader.Reset(benchmarkStreamWanfData)
 		dec, err := NewStreamDecoder(reader)
 		if err != nil {
 			b.Fatalf("NewStreamDecoder failed during benchmark: %v", err)
 		}
 		err = dec.Decode(&cfg)
 		dec.Close()
-		if err != nil {
-			b.Fatalf("Decode failed during benchmark: %v", err)
-		}
 	}
 }
 
-func BenchmarkStreamEncode(b *testing.B) {
-	if benchmarkWanfData == nil {
-		b.Skip("Cannot read benchmark data file")
+func BenchmarkEncodeSimple_Base(b *testing.B) {
+	if benchmarkStreamWanfData == nil {
+		b.Skip("Cannot read stream benchmark data file")
 	}
-	// Create a representative config struct by decoding the benchmark file once.
 	var config benchmarkConfig
-	dec, err := NewDecoder(bytes.NewReader(benchmarkWanfData), WithBasePath("testfile"))
-	if err != nil {
-		b.Fatalf("Failed to create decoder for benchmark setup: %v", err)
-	}
-	err = dec.Decode(&config)
-	if err != nil {
-		b.Fatalf("Failed to decode benchmark data for encoder setup: %v", err)
-	}
+	_ = Decode(benchmarkStreamWanfData, &config)
 
 	b.ResetTimer()
 	b.ReportAllocs()
 
 	for i := 0; i < b.N; i++ {
-		// Use io.Discard to benchmark the streaming performance without writing to a buffer.
-		enc := NewStreamEncoder(io.Discard)
-		_ = enc.Encode(&config) // Using default options for benchmark
+		_, _ = Marshal(&config)
 	}
 }
 
-func BenchmarkLexerDurationSingle(b *testing.B) {
+func BenchmarkEncodeSimple_Stream(b *testing.B) {
+	if benchmarkStreamWanfData == nil {
+		b.Skip("Cannot read stream benchmark data file")
+	}
+	var config benchmarkConfig
+	_ = Decode(benchmarkStreamWanfData, &config)
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		enc := NewStreamEncoder(io.Discard)
+		_ = enc.Encode(&config)
+	}
+}
+
+func BenchmarkLexerDurationSingle_Base(b *testing.B) {
 	input := []byte("10s")
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -212,7 +266,7 @@ func BenchmarkLexerDurationSingle(b *testing.B) {
 	}
 }
 
-func BenchmarkLexerDurationCompound(b *testing.B) {
+func BenchmarkLexerDurationCompound_Base(b *testing.B) {
 	input := []byte("1h30m45s")
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -221,21 +275,25 @@ func BenchmarkLexerDurationCompound(b *testing.B) {
 	}
 }
 
-func BenchmarkStreamLexerDurationSingle(b *testing.B) {
+func BenchmarkLexerDurationSingle_Stream(b *testing.B) {
 	input := []byte("10s")
+	reader := bytes.NewReader(input)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		l := newStreamLexer(bytes.NewReader(input))
+		reader.Reset(input)
+		l := newStreamLexer(reader)
 		l.NextToken()
 		putStreamLexer(l)
 	}
 }
 
-func BenchmarkStreamLexerDurationCompound(b *testing.B) {
+func BenchmarkLexerDurationCompound_Stream(b *testing.B) {
 	input := []byte("1h30m45s")
+	reader := bytes.NewReader(input)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		l := newStreamLexer(bytes.NewReader(input))
+		reader.Reset(input)
+		l := newStreamLexer(reader)
 		l.NextToken()
 		putStreamLexer(l)
 	}
