@@ -40,3 +40,9 @@ WANF 广泛使用 `sync.Pool` 来重用临时对象，以减轻垃圾回收（GC
 ## 5. 零拷贝转换
 
 在处理内部逻辑（如字段名查找）时，使用 `unsafe` 进行 `[]byte` 和 `string` 的零拷贝转换（见 `utils.go` 中的 `BytesToString` 和 `StringToBytes`），进一步压榨性能。
+
+## 6. 测试与持续回归检查
+
+为了防止类似指针解引用崩溃等问题的回归，项目在 `test/` 目录下维护了一系列针对已知历史问题的回归测试：
+- `repro_panic_test.go`: 检查指针集合（Slice, Map）的 `omitempty` 逻辑。
+- `repro_struct_ptr_panic_test.go`: 检查嵌套结构体指针的编码安全性。
