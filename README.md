@@ -141,7 +141,6 @@ package main
 
 import (
     "fmt"
-    MaxStreams int           `wanf:"max_streams,omitempty"` // 忽略零值
     "github.com/WJQSERVER/wanf"
     "time"
 )
@@ -153,8 +152,9 @@ type Config struct {
 }
 
 type ServerConfig struct {
-    Host     string        `wanf:"host"`
-    Port     int           `wanf:"port"`
+    Host       string        `wanf:"host"`
+    Port       int           `wanf:"port"`
+    MaxStreams int           `wanf:"max_streams,omitempty"` // 忽略零值
 }
 
 type DatabaseConfig struct {
@@ -229,6 +229,15 @@ database {
 为了获得最佳的开发体验, 建议安装官方的VS Code扩展, 它提供了语法高亮、实时`lint`检查和格式化功能.
 
 *   **[WANF Language Support on VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=wjqserver.wanf-language-support)**
+
+## 详细文档
+
+有关内部实现、标签使用和流式 API 的更多信息，请参阅 `docs` 目录：
+
+- [内部实现与优化](./docs/internal.md)
+- [流式 API](./docs/streaming.md)
+- [结构体标签 (wanf tag)](./docs/tags.md)
+- [编码格式详解](./docs/encoding_formats.md)
 
 ## 贡献
 
