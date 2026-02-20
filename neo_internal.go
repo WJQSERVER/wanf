@@ -41,8 +41,8 @@ func getNeoStructInfo(t reflect.Type) *neoStructInfo {
 		byName: make(map[string]*neoField),
 	}
 
-	for i := 0; i < t.NumField(); i++ {
-		f := t.Field(i)
+	for f := range t.Fields() {
+		f := f
 		if f.PkgPath != "" {
 			continue
 		}

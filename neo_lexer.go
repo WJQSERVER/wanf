@@ -28,7 +28,7 @@ type NeoLexer struct {
 	buf    []byte
 	err    error
 
-	litBuf []byte
+	litBuf      []byte
 	isStreaming bool
 }
 
