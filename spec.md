@@ -200,6 +200,10 @@ WANF 解析器通过 Go 结构体字段的 `wanf` 标签来确定映射关系。
 
 *   **基础映射**: `wanf:"name"` 将字段与 WANF 文件中名为 `name` 的键或块进行关联。
 
+* **忽略空值 (omitempty)**: `wanf:"name,omitempty"`
+    当字段值为其类型的零值 (如空字符串、0、`nil` 指针) 或长度为 0 的集合 (如空 `slice` 或 `map`) 时, 编码器将在输出中忽略该字段。
+    注意: 出于兼容性考虑, 即使未显式设置 `omitempty`, 长度为 0 的 `map` 也会被忽略。
+
 *   **列表到 Map 的映射**: `wanf:"services,key=name"`
     此标签指示解析器:
     1.  找到名为 `services` 的列表。

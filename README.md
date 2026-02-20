@@ -141,6 +141,7 @@ package main
 
 import (
     "fmt"
+    MaxStreams int           `wanf:"max_streams,omitempty"` // 忽略零值
     "github.com/WJQSERVER/wanf"
     "time"
 )
