@@ -117,3 +117,34 @@ func BenchmarkEncodeSimple_Neo(b *testing.B) {
 		enc.Close()
 	}
 }
+
+func BenchmarkDecodeComplex_NeoUnmarshal(b *testing.B) {
+	if benchmarkWanfData == nil {
+		b.Skip("Cannot read benchmark data file")
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		var cfg benchmarkConfig
+		_ = NeoUnmarshal(benchmarkWanfData, &cfg)
+	}
+}
+
+func BenchmarkLexer_NeoFast(b *testing.B) {
+	if benchmarkWanfData == nil {
+		b.Skip("Cannot read benchmark data file")
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		l := NewNeoLexer(nil)
+		l.SetInput(benchmarkWanfData)
+		for {
+			tok := l.nextToken()
+			if tok.Type == EOF {
+				break
+			}
+		}
+		l.Close()
+	}
+}
