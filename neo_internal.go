@@ -3,6 +3,7 @@ package wanf
 import (
 	"bytes"
 	"reflect"
+	"strings"
 	"sync"
 	"unsafe"
 )
@@ -13,6 +14,7 @@ type neoField struct {
 	nameBytes    []byte
 	offset       uintptr
 	kind         reflect.Kind
+	isPtr        bool
 	isBlock      bool
 	isCollection bool
 	tag          wanfTag
@@ -51,7 +53,8 @@ func getNeoStructInfo(t reflect.Type) *neoStructInfo {
 		tagInfo := parseWanfTag(tagStr, f.Name)
 
 		ft := f.Type
-		if ft.Kind() == reflect.Pointer {
+		isPtr := ft.Kind() == reflect.Pointer
+		if isPtr {
 			ft = ft.Elem()
 		}
 
@@ -64,6 +67,7 @@ func getNeoStructInfo(t reflect.Type) *neoStructInfo {
 			nameBytes:    []byte(tagInfo.Name),
 			offset:       f.Offset,
 			kind:         fk,
+			isPtr:        isPtr,
 			isBlock:      isBlock,
 			isCollection: isCollection,
 			tag:          tagInfo,
@@ -76,6 +80,11 @@ func getNeoStructInfo(t reflect.Type) *neoStructInfo {
 
 		info.fields = append(info.fields, nf)
 		info.byName[nf.name] = &info.fields[len(info.fields)-1]
+		// 为区分大小写的匹配增加全小写形式的映射
+		lowerName := strings.ToLower(nf.name)
+		if _, ok := info.byName[lowerName]; !ok {
+			info.byName[lowerName] = &info.fields[len(info.fields)-1]
+		}
 	}
 
 	neoCache.Store(t, info)
@@ -140,7 +149,7 @@ func NeoMarshal(v any) ([]byte, error) {
 }
 
 func NeoUnmarshal(data []byte, v any) error {
-	dec := NewNeoDecoder(bytes.NewReader(data))
+	dec := NewNeoDecoderBytes(data)
 	defer dec.Close()
 	return dec.Decode(v)
 }

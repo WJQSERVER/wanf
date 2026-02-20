@@ -1,8 +1,8 @@
 package wanf
 
 import (
-	"fmt"
 	"bufio"
+	"fmt"
 	"io"
 	"reflect"
 	"strconv"
@@ -66,11 +66,8 @@ func (enc *NeoEncoder) Encode(v any) error {
 }
 
 func (enc *NeoEncoder) encodeStruct(info *neoStructInfo, ptr unsafe.Pointer) error {
-	for i, f := range info.fields {
-		if i > 0 {
-			enc.writeNewLine()
-		}
-
+	first := true
+	for _, f := range info.fields {
 		fieldPtr := unsafe.Pointer(uintptr(ptr) + f.offset)
 
 		// Check omitempty
@@ -78,9 +75,18 @@ func (enc *NeoEncoder) encodeStruct(info *neoStructInfo, ptr unsafe.Pointer) err
 			continue
 		}
 
+		if !first {
+			enc.writeNewLine()
+		}
+		first = false
+
 		enc.writeIndent()
 		enc.write(f.nameBytes)
-		enc.writeString(" = ")
+		if f.isBlock {
+			enc.writeString(" ")
+		} else {
+			enc.writeString(" = ")
+		}
 
 		enc.encodeField(f, fieldPtr)
 	}
@@ -88,6 +94,12 @@ func (enc *NeoEncoder) encodeStruct(info *neoStructInfo, ptr unsafe.Pointer) err
 }
 
 func (enc *NeoEncoder) encodeField(f neoField, ptr unsafe.Pointer) {
+	if f.isPtr {
+		ptr = *(*unsafe.Pointer)(ptr)
+		if ptr == nil {
+			return
+		}
+	}
 	switch f.kind {
 	case reflect.String:
 		enc.writeString("\"")
@@ -120,6 +132,9 @@ func (enc *NeoEncoder) encodeField(f neoField, ptr unsafe.Pointer) {
 }
 
 func (enc *NeoEncoder) isZero(f neoField, ptr unsafe.Pointer) bool {
+	if f.isPtr {
+		return *(*unsafe.Pointer)(ptr) == nil
+	}
 	switch f.kind {
 	case reflect.String:
 		return unsafeGetString(ptr) == ""

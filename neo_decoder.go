@@ -60,13 +60,40 @@ func (dec *NeoDecoder) decodeStruct(info *neoStructInfo, ptr unsafe.Pointer) err
 			continue
 		}
 
-		f, ok := info.byName[BytesToString(tok.Literal)]
+		nameBytes := tok.Literal
+		f, ok := info.byName[BytesToString(nameBytes)]
+		if !ok {
+			// Case-insensitive fallback
+			var buf [64]byte
+			var b []byte
+			if len(nameBytes) <= 64 {
+				b = buf[:len(nameBytes)]
+			} else {
+				b = make([]byte, len(nameBytes))
+			}
+			for i := range nameBytes {
+				c := nameBytes[i]
+				if c >= "A"[0] && c <= "Z"[0] {
+					b[i] = c + ("a"[0] - "A"[0])
+				} else {
+					b[i] = c
+				}
+			}
+			f, ok = info.byName[BytesToString(b)]
+		}
 		if !ok {
 			dec.skipValue()
 			continue
 		}
 
 		fieldPtr := unsafe.Pointer(uintptr(ptr) + f.offset)
+		if f.isPtr {
+			if *(*unsafe.Pointer)(fieldPtr) == nil {
+				rv := reflect.New(f.elemType.Elem())
+				*(*unsafe.Pointer)(fieldPtr) = unsafe.Pointer(rv.Pointer())
+			}
+			fieldPtr = *(*unsafe.Pointer)(fieldPtr)
+		}
 
 		next := dec.l.nextToken()
 		if next.Type == ASSIGN {
@@ -95,6 +122,9 @@ func (dec *NeoDecoder) decodeValue(f *neoField, ptr unsafe.Pointer) {
 	case reflect.Int64:
 		i64, _ := strconv.ParseInt(BytesToString(tok.Literal), 10, 64)
 		*(*int64)(ptr) = i64
+	case reflect.Float64:
+		f64, _ := strconv.ParseFloat(BytesToString(tok.Literal), 64)
+		*(*float64)(ptr) = f64
 	case reflect.Bool:
 		if len(tok.Literal) == 4 && BytesToString(tok.Literal) == "true" {
 			*(*bool)(ptr) = true

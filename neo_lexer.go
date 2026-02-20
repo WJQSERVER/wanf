@@ -106,14 +106,13 @@ func (l *NeoLexer) nextToken() Token {
 	case '`':
 		return l.readRawString()
 	default:
-		if isIdentTable[ch] {
-			return l.readIdentifierOrKeyword()
-		}
 		if (ch >= '0' && ch <= '9') || ch == '-' || ch == '.' {
 			return l.readNumberOrDuration()
 		}
+		if isIdentTable[ch] {
+			return l.readIdentifierOrKeyword()
+		}
 	}
-
 	l.advance()
 	return Token{Type: ILLEGAL, Literal: []byte{ch}, Line: startLine, Column: startCol}
 }
@@ -183,9 +182,9 @@ func (l *NeoLexer) skipWhitespace() {
 	}
 }
 
-func (l *NeoLexer) getLiteral(startPos int) []byte {
+func (l *NeoLexer) getLiteral(startPos int, endPos int) []byte {
 	if !l.isStreaming {
-		return l.input[startPos:l.pos]
+		return l.input[startPos:endPos]
 	}
 	return l.litBuf
 }
@@ -201,7 +200,7 @@ func (l *NeoLexer) readIdentifierOrKeyword() Token {
 		}
 	}
 
-	lit := l.getLiteral(startPos)
+	lit := l.getLiteral(startPos, l.pos)
 
 	if len(lit) == 6 && BytesToString(lit) == "import" {
 		return Token{Type: IMPORT, Literal: importLit, Line: startLine, Column: startCol}
@@ -225,7 +224,7 @@ func (l *NeoLexer) readString(quote byte) Token {
 		}
 	}
 	l.advance() // skip quote
-	return Token{Type: STRING, Literal: l.getLiteral(startPos), Line: startLine, Column: startCol}
+	return Token{Type: STRING, Literal: l.getLiteral(startPos, l.pos-1), Line: startLine, Column: startCol}
 }
 
 func (l *NeoLexer) readRawString() Token {
@@ -240,7 +239,7 @@ func (l *NeoLexer) readRawString() Token {
 		}
 	}
 	l.advance() // skip `
-	return Token{Type: STRING, Literal: l.getLiteral(startPos), Line: startLine, Column: startCol}
+	return Token{Type: STRING, Literal: l.getLiteral(startPos, l.pos-1), Line: startLine, Column: startCol}
 }
 
 func (l *NeoLexer) readNumberOrDuration() Token {
@@ -258,6 +257,6 @@ func (l *NeoLexer) readNumberOrDuration() Token {
 			break
 		}
 	}
-	lit := l.getLiteral(startPos)
+	lit := l.getLiteral(startPos, l.pos)
 	return Token{Type: INT, Literal: lit, Line: startLine, Column: startCol}
 }
