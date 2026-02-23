@@ -232,7 +232,6 @@ func (l *Lexer) readDurationSuffix() {
 	l.readChar()
 }
 
-
 func (l *Lexer) skipBytes(n int) {
 	l.position += n
 	l.readPosition = l.position + 1

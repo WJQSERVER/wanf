@@ -17,6 +17,7 @@ type neoField struct {
 	isPtr        bool
 	isBlock      bool
 	isCollection bool
+	isDuration   bool
 	tag          wanfTag
 	elemType     reflect.Type
 	structInfo   *neoStructInfo
@@ -70,6 +71,7 @@ func getNeoStructInfo(t reflect.Type) *neoStructInfo {
 			isPtr:        isPtr,
 			isBlock:      isBlock,
 			isCollection: isCollection,
+			isDuration:   ft == durationType,
 			tag:          tagInfo,
 			elemType:     f.Type,
 		}

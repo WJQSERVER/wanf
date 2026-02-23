@@ -1,12 +1,12 @@
 package wanf_test
 
 import (
-	"testing"
 	"github.com/WJQSERVER/wanf"
+	"testing"
 )
 
 type PointerConfig struct {
-	SlicePtr *[]string `wanf:"slice_ptr,omitempty"`
+	SlicePtr *[]string          `wanf:"slice_ptr,omitempty"`
 	MapPtr   *map[string]string `wanf:"map_ptr,omitempty"`
 }
 

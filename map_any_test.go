@@ -124,7 +124,7 @@ func TestEncodeMapAny(t *testing.T) {
 
 	cfg := Config{
 		Data: map[string]any{
-			"name": "test",
+			"name":  "test",
 			"value": int64(123),
 			"nested": map[string]any{
 				"bool": true,

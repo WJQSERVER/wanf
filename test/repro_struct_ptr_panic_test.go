@@ -1,8 +1,8 @@
 package wanf_test
 
 import (
-	"testing"
 	"github.com/WJQSERVER/wanf"
+	"testing"
 )
 
 type Sub struct {

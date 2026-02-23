@@ -3,6 +3,7 @@ package wanf
 import (
 	"reflect"
 	"testing"
+	"time"
 )
 
 func TestNeo_RoundTrip_Basic(t *testing.T) {
@@ -155,5 +156,58 @@ func TestNeo_FieldMatching(t *testing.T) {
 
 	if cfg2.TaggedField != "value3" || cfg2.Name != "value4" {
 		t.Errorf("Case-insensitive field matching failed. Got %+v", cfg2)
+	}
+}
+
+func TestNeo_Duration(t *testing.T) {
+	type Config struct {
+		Timeout time.Duration `wanf:"timeout"`
+	}
+
+	tests := []struct {
+		name string
+		val  time.Duration
+	}{
+		{"Positive", 10 * time.Second},
+		{"Negative", -10 * time.Second},
+		{"Zero", 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Config{Timeout: tt.val}
+			data, err := NeoMarshal(&cfg)
+			if err != nil {
+				t.Fatalf("NeoMarshal failed: %v", err)
+			}
+			t.Logf("Encoded duration (%s): %s", tt.name, string(data))
+
+			var decoded Config
+			err = NeoUnmarshal(data, &decoded)
+			if err != nil {
+				t.Fatalf("NeoUnmarshal failed: %v", err)
+			}
+
+			if decoded.Timeout != cfg.Timeout {
+				t.Errorf("Round-trip failed. Got %v, want %v", decoded.Timeout, cfg.Timeout)
+			}
+		})
+	}
+}
+
+func TestNeo_DurationLiteral(t *testing.T) {
+	type Config struct {
+		Timeout time.Duration `wanf:"timeout"`
+	}
+
+	wanfData := `timeout = -10s`
+	var cfg Config
+	err := NeoUnmarshal([]byte(wanfData), &cfg)
+	if err != nil {
+		t.Fatalf("NeoUnmarshal failed for literal: %v", err)
+	}
+
+	if cfg.Timeout != -10*time.Second {
+		t.Errorf("Expected -10s, got %v", cfg.Timeout)
 	}
 }

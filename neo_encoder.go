@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strconv"
 	"sync"
+	"time"
 	"unsafe"
 )
 
@@ -108,7 +109,11 @@ func (enc *NeoEncoder) encodeField(f neoField, ptr unsafe.Pointer) {
 	case reflect.Int:
 		enc.write(strconv.AppendInt(enc.tmpBuf[:0], int64(unsafeGetInt(ptr)), 10))
 	case reflect.Int64:
-		enc.write(strconv.AppendInt(enc.tmpBuf[:0], unsafeGetInt64(ptr), 10))
+		if f.isDuration {
+			enc.writeString(time.Duration(unsafeGetInt64(ptr)).String())
+		} else {
+			enc.write(strconv.AppendInt(enc.tmpBuf[:0], unsafeGetInt64(ptr), 10))
+		}
 	case reflect.Bool:
 		if unsafeGetBool(ptr) {
 			enc.writeString("true")

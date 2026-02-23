@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strconv"
 	"sync"
+	"time"
 	"unsafe"
 )
 
@@ -120,8 +121,18 @@ func (dec *NeoDecoder) decodeValue(f *neoField, ptr unsafe.Pointer) {
 		i64, _ := strconv.ParseInt(BytesToString(tok.Literal), 10, 64)
 		*(*int)(ptr) = int(i64)
 	case reflect.Int64:
-		i64, _ := strconv.ParseInt(BytesToString(tok.Literal), 10, 64)
-		*(*int64)(ptr) = i64
+		if f.isDuration {
+			s := BytesToString(tok.Literal)
+			d, err := time.ParseDuration(s)
+			if err != nil {
+				i64, _ := strconv.ParseInt(s, 10, 64)
+				d = time.Duration(i64)
+			}
+			*(*int64)(ptr) = int64(d)
+		} else {
+			i64, _ := strconv.ParseInt(BytesToString(tok.Literal), 10, 64)
+			*(*int64)(ptr) = i64
+		}
 	case reflect.Float64:
 		f64, _ := strconv.ParseFloat(BytesToString(tok.Literal), 64)
 		*(*float64)(ptr) = f64

@@ -16,9 +16,9 @@ import (
 
 // StreamDecoder 结构体用于从输入流中解码WANF格式数据。
 type StreamDecoder struct {
-	d         *internalDecoder // 内部解码器
-	p         *Parser          // 语法解析器
-	processed map[string]bool  // 已处理的导入路径
+	d         *internalDecoder  // 内部解码器
+	p         *Parser           // 语法解析器
+	processed map[string]bool   // 已处理的导入路径
 	stringMap map[string]string // 字符串缓存
 }
 
@@ -737,8 +737,8 @@ func (dec *StreamDecoder) decodeMapLiteralOnTheFly() (any, error) {
 			return nil, fmt.Errorf("wanf: expected identifier as key in map literal")
 		}
 		key := dec.safeString(dec.p.curToken.Literal) // 获取键
-		dec.p.nextToken()                     // 消费标识符
-		if !dec.p.curTokenIs(ASSIGN) {        // 期望键后跟'='
+		dec.p.nextToken()                             // 消费标识符
+		if !dec.p.curTokenIs(ASSIGN) {                // 期望键后跟'='
 			return nil, fmt.Errorf("wanf: expected '=' after key in map literal")
 		}
 		dec.p.nextToken() // 消费赋值符号
@@ -778,7 +778,7 @@ func (dec *StreamDecoder) evalEnvExpressionOnTheFly() (any, error) {
 		return nil, fmt.Errorf("wanf: expected string argument for env()")
 	}
 	envVarName := dec.safeString(dec.p.curToken.Literal) // 获取环境变量名
-	dec.p.nextToken()                            // 消费环境变量名字符串
+	dec.p.nextToken()                                    // 消费环境变量名字符串
 
 	var val string
 	var found bool
@@ -790,7 +790,7 @@ func (dec *StreamDecoder) evalEnvExpressionOnTheFly() (any, error) {
 			return nil, fmt.Errorf("wanf: expected string for env() default value")
 		}
 		defaultValue := dec.safeString(dec.p.curToken.Literal) // 获取默认值
-		dec.p.nextToken()                              // 消费默认值字符串
+		dec.p.nextToken()                                      // 消费默认值字符串
 
 		val, found = os.LookupEnv(envVarName) // 查找环境变量
 		if !found {

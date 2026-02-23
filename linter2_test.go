@@ -178,7 +178,7 @@ a_block {
 }
 b_kv = 2
 `,
-			opts:       FormatOptions{NoSort: true, EmptyLines: true},
+			opts: FormatOptions{NoSort: true, EmptyLines: true},
 			wantOutput: `c_kv = 1
 
 a_block {
