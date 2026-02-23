@@ -195,6 +195,59 @@ func TestNeo_Duration(t *testing.T) {
 	}
 }
 
+func TestNeo_Slice(t *testing.T) {
+	type Config struct {
+		Nums []int `wanf:"nums"`
+	}
+
+	cfg := Config{
+		Nums: []int{1, 2, 3, 4, 5},
+	}
+
+	data, err := NeoMarshal(&cfg)
+	if err != nil {
+		t.Fatalf("NeoMarshal failed: %v", err)
+	}
+
+	var decoded Config
+	err = NeoUnmarshal(data, &decoded)
+	if err != nil {
+		t.Fatalf("NeoUnmarshal failed: %v", err)
+	}
+
+	if !reflect.DeepEqual(cfg, decoded) {
+		t.Errorf("Slice round-trip failed.\nGot:  %+v\nWant: %+v", decoded, cfg)
+	}
+}
+
+func TestNeo_Map(t *testing.T) {
+	type Config struct {
+		Data map[string]string `wanf:"data"`
+	}
+
+	cfg := Config{
+		Data: map[string]string{
+			"key1": "value1",
+			"key2": "value2",
+		},
+	}
+
+	data, err := NeoMarshal(&cfg)
+	if err != nil {
+		t.Fatalf("NeoMarshal failed: %v", err)
+	}
+
+	var decoded Config
+	err = NeoUnmarshal(data, &decoded)
+	if err != nil {
+		t.Fatalf("NeoUnmarshal failed: %v", err)
+	}
+
+	if !reflect.DeepEqual(cfg, decoded) {
+		t.Errorf("Map round-trip failed.\nGot:  %+v\nWant: %+v", decoded, cfg)
+	}
+}
+
 func TestNeo_DurationLiteral(t *testing.T) {
 	type Config struct {
 		Timeout time.Duration `wanf:"timeout"`
