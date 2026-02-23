@@ -511,7 +511,6 @@ func (p *Parser) appendErrorAt(tok Token, msg string) {
 	})
 }
 
-
 // logToken 是一个调试辅助函数, 用于打印当前的 token 信息.
 func (p *Parser) logToken(msg string) {
 	// 你可以把 os.Stderr 换成你喜欢的日志库, 比如 log.Printf

@@ -120,7 +120,6 @@ key = "value" // This is a line comment.
 	}
 }
 
-
 func checkParserErrors(t *testing.T, p *Parser) {
 	errors := p.Errors()
 	if len(errors) == 0 {

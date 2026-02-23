@@ -604,7 +604,7 @@ func findFieldAndTag(structVal reflect.Value, name []byte) (reflect.Value, wanfT
 	}
 
 	isASCII := true
-	for i := 0; i < len(name); i++ {
+	for i := range name {
 		if name[i] >= 128 {
 			isASCII = false
 			break
@@ -612,7 +612,7 @@ func findFieldAndTag(structVal reflect.Value, name []byte) (reflect.Value, wanfT
 	}
 
 	if isASCII {
-		for i := 0; i < len(name); i++ {
+		for i := range name {
 			c := name[i]
 			if c >= 'A' && c <= 'Z' {
 				b[i] = c + ('a' - 'A')

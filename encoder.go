@@ -194,14 +194,14 @@ type internalEncoder struct {
 }
 
 type cachedField struct {
-	name        string
-	nameBytes   []byte
-	tag         wanfTag
-	fieldType   reflect.StructField
-	isBlock     bool
-	isBlockLike bool
-	index       int
-	kind        reflect.Kind
+	name         string
+	nameBytes    []byte
+	tag          wanfTag
+	fieldType    reflect.StructField
+	isBlock      bool
+	isBlockLike  bool
+	index        int
+	kind         reflect.Kind
 	isCollection bool
 }
 
@@ -379,7 +379,7 @@ func (e *internalEncoder) encodeSlice(v reflect.Value, depth int) {
 	}
 
 	if e.opts.Style == StyleSingleLine {
-		for i := 0; i < l; i++ {
+		for i := range l {
 			if i > 0 {
 				e.buf.WriteString(",")
 			}
@@ -388,7 +388,7 @@ func (e *internalEncoder) encodeSlice(v reflect.Value, depth int) {
 	} else {
 		e.writeNewLine()
 		e.indent++
-		for i := 0; i < l; i++ {
+		for i := range l {
 			e.writeIndent()
 			e.encodeValue(v.Index(i), depth)
 			e.buf.WriteString(",")
@@ -1056,7 +1056,7 @@ func (e *streamInternalEncoder) encodeSlice(v reflect.Value, depth int) {
 	}
 
 	if e.opts.Style == StyleSingleLine {
-		for i := 0; i < l; i++ {
+		for i := range l {
 			if i > 0 {
 				e.writeString(",")
 			}
@@ -1065,7 +1065,7 @@ func (e *streamInternalEncoder) encodeSlice(v reflect.Value, depth int) {
 	} else {
 		e.writeNewLine()
 		e.indent++
-		for i := 0; i < l; i++ {
+		for i := range l {
 			e.writeIndent()
 			e.encodeValue(v.Index(i), depth)
 			e.writeString(",")

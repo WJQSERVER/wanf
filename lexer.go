@@ -151,8 +151,11 @@ func (l *Lexer) NextToken() Token {
 			tok.Line = line
 			tok.Column = col
 			return tok
-		} else if l.ch >= '0' && l.ch <= '9' {
+		} else if (l.ch >= '0' && l.ch <= '9') || (l.ch == '-' && ((l.peekChar() >= '0' && l.peekChar() <= '9') || l.peekChar() == '.')) {
 			startPos := l.position
+			if l.ch == '-' {
+				l.readChar()
+			}
 			isFloat := false
 			p := l.position
 			for p < len(l.input) {
@@ -231,7 +234,6 @@ func (l *Lexer) readDurationSuffix() {
 	}
 	l.readChar()
 }
-
 
 func (l *Lexer) skipBytes(n int) {
 	l.position += n

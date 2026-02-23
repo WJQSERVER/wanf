@@ -8,8 +8,8 @@ import (
 
 var (
 	durationType        = reflect.TypeFor[time.Duration]()
-	mapStringAnyType    = reflect.TypeOf(map[string]any(nil))
-	mapStringStringType = reflect.TypeOf(map[string]string(nil))
+	mapStringAnyType    = reflect.TypeFor[map[string]any]()
+	mapStringStringType = reflect.TypeFor[map[string]string]()
 )
 
 // StringToBytes 将字符串转换为字节切片, 不进行内存分配.
