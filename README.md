@@ -129,6 +129,19 @@ wanflint lint your_config.wanf
 wanflint lint --json your_config.wanf
 ```
 
+
+## 高性能编解码器 (Neo)
+
+对于追求极致性能的应用，WANF 提供了一个实验性的 **Neo** 编解码器。它利用 `unsafe` 操作和优化算法，实现了近乎 **零内存分配** 的处理能力。
+
+```go
+// 使用 Neo 进行极速编解码
+data, err := wanf.NeoMarshal(&cfg)
+err = wanf.NeoUnmarshal(data, &cfg)
+```
+
+更多详情请参考 [Neo 文档](./docs/neo.md)。
+
 ## Go 语言集成
 
 在您的 Go 应用中使用 WANF 非常简单。
@@ -238,6 +251,7 @@ database {
 - [流式 API](./docs/streaming.md)
 - [结构体标签 (wanf tag)](./docs/tags.md)
 - [编码格式详解](./docs/encoding_formats.md)
+- [实验性高性能编解码器 (Neo)](./docs/neo.md)
 
 ## 贡献
 
