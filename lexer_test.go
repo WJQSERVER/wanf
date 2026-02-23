@@ -103,6 +103,8 @@ func TestLexerDuration(t *testing.T) {
 		{"10ms", DUR, "10ms"},
 		{"10ns", DUR, "10ns"},
 		{"1.5h", DUR, "1.5h"},
+		{"-10s", DUR, "-10s"},
+		{"-1h30m45s", DUR, "-1h30m45s"},
 		{"1h30m45", DUR, "1h30m"}, // 45 is not part of DUR because it lacks unit
 	}
 

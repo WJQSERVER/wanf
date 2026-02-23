@@ -158,7 +158,7 @@ func (l *streamLexer) NextToken() Token {
 			tok.Line = line
 			tok.Column = col
 			return tok
-		} else if l.ch >= '0' && l.ch <= '9' {
+		} else if (l.ch >= '0' && l.ch <= '9') || (l.ch == '-' && ((l.peekChar() >= '0' && l.peekChar() <= '9') || l.peekChar() == '.')) {
 			literal := l.readNumber()
 			if isDurationUnit(l.ch, l.peekChar()) {
 				tok.Type = DUR
@@ -394,6 +394,10 @@ func (l *streamLexer) readIdentifier() []byte {
 
 func (l *streamLexer) appendNumber(buf *bytes.Buffer) {
 	isFloat := false
+	if l.ch == '-' {
+		buf.WriteByte(l.ch)
+		l.readChar()
+	}
 	for {
 		if (l.ch >= '0' && l.ch <= '9') || (l.ch == '.' && !isFloat) {
 			if l.ch == '.' {
