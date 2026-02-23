@@ -80,104 +80,128 @@ func (l *NeoLexer) nextTokenFast() Token {
 	input := l.input
 	read := l.read
 	pos := l.pos
+	line := l.line
+	col := l.col
 
-	// Skip whitespace and comments
 skip:
 	for pos < read {
 		ch := input[pos]
-		if ch == ' ' || ch == '\t' || ch == '\r' {
+		switch ch {
+		case ' ', '\t', '\r':
 			pos++
-			l.col++
-			continue
-		}
-		if ch == '\n' {
+			col++
+		case '\n':
 			pos++
-			l.line++
-			l.col = 1
-			continue
-		}
-		if ch == '/' && pos+1 < read {
-			if input[pos+1] == '/' {
-				pos += 2
-				for pos < read && input[pos] != '\n' { pos++ }
-				continue
-			}
-			if input[pos+1] == '*' {
-				pos += 2
-				for pos < read {
-					if input[pos] == '*' && pos+1 < read && input[pos+1] == '/' {
-						pos += 2
-						l.col += 2
-						continue skip
+			line++
+			col = 1
+		case '/':
+			if pos+1 < read {
+				if input[pos+1] == '/' {
+					pos += 2
+					for pos < read && input[pos] != '\n' { pos++ }
+					continue
+				} else if input[pos+1] == '*' {
+					pos += 2
+					for pos < read {
+						if input[pos] == '*' && pos+1 < read && input[pos+1] == '/' {
+							pos += 2
+							col += 2
+							continue skip
+						}
+						if input[pos] == '\n' {
+							line++
+							col = 1
+						} else {
+							col++
+						}
+						pos++
 					}
-					if input[pos] == '\n' {
-						l.line++
-						l.col = 1
-					} else {
-						l.col++
-					}
-					pos++
 				}
 			}
+			break skip
+		default:
+			break skip
 		}
-		break
 	}
 
-	l.pos = pos
 	if pos >= read {
-		return Token{Type: EOF, Line: l.line, Column: l.col}
+		l.pos, l.line, l.col = pos, line, col
+		return Token{Type: EOF, Line: line, Column: col}
 	}
 
 	ch := input[pos]
-	startLine, startCol := l.line, l.col
+	startLine, startCol := line, col
 	pos++
-	l.pos = pos
-	l.col++
+	col++
 
 	switch ch {
-	case '=': return Token{Type: ASSIGN, Literal: assignLit, Line: startLine, Column: startCol}
-	case '{': return Token{Type: LBRACE, Literal: lbraceLit, Line: startLine, Column: startCol}
-	case '}': return Token{Type: RBRACE, Literal: rbraceLit, Line: startLine, Column: startCol}
-	case '[': return Token{Type: LBRACK, Literal: lbrackLit, Line: startLine, Column: startCol}
-	case ']': return Token{Type: RBRACK, Literal: rbrackLit, Line: startLine, Column: startCol}
-	case ',': return Token{Type: COMMA, Literal: commaLit, Line: startLine, Column: startCol}
-	case ';': return Token{Type: SEMICOLON, Literal: semicolonLit, Line: startLine, Column: startCol}
+	case '=':
+		l.pos, l.line, l.col = pos, line, col
+		return Token{Type: ASSIGN, Literal: assignLit, Line: startLine, Column: startCol}
+	case '{':
+		l.pos, l.line, l.col = pos, line, col
+		return Token{Type: LBRACE, Literal: lbraceLit, Line: startLine, Column: startCol}
+	case '}':
+		l.pos, l.line, l.col = pos, line, col
+		return Token{Type: RBRACE, Literal: rbraceLit, Line: startLine, Column: startCol}
+	case '[':
+		l.pos, l.line, l.col = pos, line, col
+		return Token{Type: LBRACK, Literal: lbrackLit, Line: startLine, Column: startCol}
+	case ']':
+		l.pos, l.line, l.col = pos, line, col
+		return Token{Type: RBRACK, Literal: rbrackLit, Line: startLine, Column: startCol}
+	case ',':
+		l.pos, l.line, l.col = pos, line, col
+		return Token{Type: COMMA, Literal: commaLit, Line: startLine, Column: startCol}
+	case ';':
+		l.pos, l.line, l.col = pos, line, col
+		return Token{Type: SEMICOLON, Literal: semicolonLit, Line: startLine, Column: startCol}
 	case '"', '\'':
 		startData := pos
 		for pos < read && input[pos] != ch { pos++ }
 		lit := input[startData:pos]
 		if pos < read { pos++ }
-		l.pos = pos
-		l.col += len(lit) + 1
+		col += (pos - startData)
+		l.pos, l.line, l.col = pos, line, col
 		return Token{Type: STRING, Literal: lit, Line: startLine, Column: startCol}
+	}
+
+	if (ch >= '0' && ch <= '9') || ch == '-' || ch == '.' {
+		sp := pos - 1
+		hasLetter := false
+		for pos < read {
+			c := input[pos]
+			if (c >= '0' && c <= '9') || c == '.' || c == '-' {
+				pos++
+			} else if (c >= 'a' && c <= 'z') || c == 0xC2 || c == 0xB5 {
+				pos++
+				hasLetter = true
+			} else {
+				break
+			}
+		}
+		col += (pos - sp - 1)
+		l.pos, l.line, l.col = pos, line, col
+		typ := INT
+		if hasLetter { typ = DUR }
+		return Token{Type: typ, Literal: input[sp:pos], Line: startLine, Column: startCol}
 	}
 
 	if isIdentTable[ch] {
 		sp := pos - 1
 		for pos < read && isIdentTable[input[pos]] { pos++ }
-		l.pos = pos
-		l.col += (pos - sp - 1)
+		col += (pos - sp - 1)
+		l.pos, l.line, l.col = pos, line, col
 		lit := input[sp:pos]
 		if len(lit) == 6 && BytesToString(lit) == "import" { return Token{Type: IMPORT, Literal: importLit, Line: startLine, Column: startCol} }
 		if len(lit) == 3 && BytesToString(lit) == "var" { return Token{Type: VAR, Literal: varLit, Line: startLine, Column: startCol} }
 		return Token{Type: IDENT, Literal: lit, Line: startLine, Column: startCol}
 	}
 
-	if (ch >= '0' && ch <= '9') || ch == '-' || ch == '.' {
-		sp := pos - 1
-		for pos < read {
-			c := input[pos]
-			if (c >= '0' && c <= '9') || c == '.' || c == '-' || (c >= 'a' && c <= 'z') || c == 0xC2 || c == 0xB5 { pos++ } else { break }
-		}
-		l.pos = pos
-		l.col += (pos - sp - 1)
-		return Token{Type: INT, Literal: input[sp:pos], Line: startLine, Column: startCol}
-	}
-
+	l.pos, l.line, l.col = pos, line, col
 	return Token{Type: ILLEGAL, Literal: input[pos-1 : pos], Line: startLine, Column: startCol}
 }
 
-// nextTokenStreaming kept as before
 func (l *NeoLexer) nextTokenStreaming() Token {
 	l.skipWhitespace(); ch := l.peek()
 	if ch == 0 { return Token{Type: EOF, Line: l.line, Column: l.col} }
@@ -191,8 +215,8 @@ func (l *NeoLexer) nextTokenStreaming() Token {
 	case ',': l.advance(); return Token{Type: COMMA, Literal: commaLit, Line: startLine, Column: startCol}
 	case ';': l.advance(); return Token{Type: SEMICOLON, Literal: semicolonLit, Line: startLine, Column: startCol}
 	}
-	if isIdentTable[ch] { return l.readIdentifierStreaming() }
 	if (ch >= '0' && ch <= '9') || ch == '-' || ch == '.' { return l.readNumberStreaming() }
+	if isIdentTable[ch] { return l.readIdentifierStreaming() }
 	if ch == '"' || ch == '\'' { return l.readStringStreaming(ch) }
 	if ch == '`' { return l.readRawStringStreaming() }
 	l.advance()
@@ -222,7 +246,23 @@ func (l *NeoLexer) advance() byte {
 func (l *NeoLexer) skipWhitespace() {
 	for {
 		ch := l.peek()
-		if ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' { l.advance() } else { break }
+		if ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' { l.advance() } else if ch == '/' {
+			l.advance()
+			next := l.peek()
+			if next == '/' {
+				l.advance()
+				for l.peek() != '\n' && l.peek() != 0 { l.advance() }
+			} else if next == '*' {
+				l.advance()
+				for {
+					c := l.advance()
+					if c == '*' && l.peek() == '/' { l.advance(); break }
+					if c == 0 { break }
+				}
+			} else {
+				break
+			}
+		} else { break }
 	}
 }
 
@@ -248,11 +288,17 @@ func (l *NeoLexer) readRawStringStreaming() Token {
 
 func (l *NeoLexer) readNumberStreaming() Token {
 	startLine, startCol := l.line, l.col; l.litBuf = l.litBuf[:0]
+	hasLetter := false
 	for {
 		ch := l.peek()
-		if (ch >= '0' && ch <= '9') || ch == '.' || ch == '-' || (ch >= 'a' && ch <= 'z') || ch == 0xC2 || ch == 0xB5 {
+		if (ch >= '0' && ch <= '9') || ch == '.' || ch == '-' {
 			l.litBuf = append(l.litBuf, l.advance())
+		} else if (ch >= 'a' && ch <= 'z') || ch == 0xC2 || ch == 0xB5 {
+			l.litBuf = append(l.litBuf, l.advance())
+			hasLetter = true
 		} else { break }
 	}
-	return Token{Type: INT, Literal: l.litBuf, Line: startLine, Column: startCol}
+	typ := INT
+	if hasLetter { typ = DUR }
+	return Token{Type: typ, Literal: l.litBuf, Line: startLine, Column: startCol}
 }

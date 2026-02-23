@@ -11,10 +11,12 @@ import (
 type neoField struct {
 	name         string
 	nameBytes    []byte
+	lcNameBytes  []byte
 	offset       uintptr
 	kind         reflect.Kind
 	isBlock      bool
 	isCollection bool
+	isPointer    bool
 	tag          wanfTag
 	elemType     reflect.Type
 	structInfo   *neoStructInfo
@@ -26,6 +28,9 @@ type neoStructInfo struct {
 	// Efficient lookup for []byte keys
 	hashTable []int // Indices into fields slice, -1 means empty
 	hashMask  int
+
+	lcHashTable []int
+	lcHashMask  int
 }
 
 func (info *neoStructInfo) findField(name []byte) *neoField {
@@ -44,6 +49,39 @@ func (info *neoStructInfo) findField(name []byte) *neoField {
 			return f
 		}
 		idx = (idx + 1) & info.hashMask
+	}
+}
+
+func (info *neoStructInfo) findFieldCaseInsensitive(name []byte) *neoField {
+	if len(info.lcHashTable) == 0 {
+		return nil
+	}
+	var buf [64]byte
+	var b []byte
+	if len(name) <= 64 {
+		b = buf[:len(name)]
+	} else {
+		b = make([]byte, len(name))
+	}
+	for i, c := range name {
+		if c >= 'A' && c <= 'Z' {
+			b[i] = c + 32
+		} else {
+			b[i] = c
+		}
+	}
+	h := hashBytes(b)
+	idx := int(h) & info.lcHashMask
+	for {
+		fIdx := info.lcHashTable[idx]
+		if fIdx == -1 {
+			return nil
+		}
+		f := &info.fields[fIdx]
+		if bytes.Equal(f.lcNameBytes, b) {
+			return f
+		}
+		idx = (idx + 1) & info.lcHashMask
 	}
 }
 
@@ -87,13 +125,24 @@ func getNeoStructInfo(t reflect.Type) *neoStructInfo {
 		fk := ft.Kind()
 		isCollection := fk == reflect.Map || fk == reflect.Slice
 
+		lcName := make([]byte, len(tagInfo.Name))
+		for j, c := range tagInfo.Name {
+			if c >= 'A' && c <= 'Z' {
+				lcName[j] = byte(c + 32)
+			} else {
+				lcName[j] = byte(c)
+			}
+		}
+
 		nf := neoField{
 			name:         tagInfo.Name,
 			nameBytes:    []byte(tagInfo.Name),
+			lcNameBytes:  lcName,
 			offset:       f.Offset,
 			kind:         fk,
 			isBlock:      isBlock,
 			isCollection: isCollection,
+			isPointer:    f.Type.Kind() == reflect.Pointer,
 			tag:          tagInfo,
 			elemType:     f.Type,
 		}
@@ -105,30 +154,50 @@ func getNeoStructInfo(t reflect.Type) *neoStructInfo {
 		info.fields = append(info.fields, nf)
 	}
 
-	// Build hash table
+	// Build hash tables
 	size := 1
 	for size < len(info.fields)*2 {
 		size *= 2
 	}
+
 	info.hashTable = make([]int, size)
 	info.hashMask = size - 1
-	for i := range info.hashTable {
-		info.hashTable[i] = -1
-	}
-	for i, f := range info.fields {
+	for i := range info.hashTable { info.hashTable[i] = -1 }
+
+	info.lcHashTable = make([]int, size)
+	info.lcHashMask = size - 1
+	for i := range info.lcHashTable { info.lcHashTable[i] = -1 }
+
+	for i := range info.fields {
+		f := &info.fields[i]
+		// Exact
 		h := hashBytes(f.nameBytes)
 		idx := int(h) & info.hashMask
 		for info.hashTable[idx] != -1 {
 			idx = (idx + 1) & info.hashMask
 		}
 		info.hashTable[idx] = i
+
+		// Case-insensitive
+		h = hashBytes(f.lcNameBytes)
+		idx = int(h) & info.lcHashMask
+		for info.lcHashTable[idx] != -1 {
+			// In case of conflict in lowercase names (unlikely in Go structs), we just take the first one
+			if bytes.Equal(info.fields[info.lcHashTable[idx]].lcNameBytes, f.lcNameBytes) {
+				break
+			}
+			idx = (idx + 1) & info.lcHashMask
+		}
+		if info.lcHashTable[idx] == -1 {
+			info.lcHashTable[idx] = i
+		}
 	}
 
 	neoCache.Store(t, info)
 	return info
 }
 
-// Unsafe helpers (Ints, Bools, Strings) - kept as before
+// Unsafe helpers (Ints, Bools, Strings)
 func unsafeSetString(ptr unsafe.Pointer, s string) { *(*string)(ptr) = s }
 func unsafeSetInt(ptr unsafe.Pointer, i int) { *(*int)(ptr) = i }
 func unsafeSetInt64(ptr unsafe.Pointer, i int64) { *(*int64)(ptr) = i }

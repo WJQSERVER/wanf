@@ -76,16 +76,26 @@ func (dec *NeoDecoder) decodeStruct(info *neoStructInfo, ptr unsafe.Pointer) err
 		}
 		f := info.findField(tok.Literal)
 		if f == nil {
-			dec.skipValue()
+			f = info.findFieldCaseInsensitive(tok.Literal)
+		}
+
+		if f == nil {
+			dec.skipField()
 			continue
 		}
 		fieldPtr := unsafe.Pointer(uintptr(ptr) + f.offset)
 		next := dec.l.nextToken()
+
 		if next.Type == ASSIGN {
-			dec.decodeValue(f, fieldPtr)
+			valTok := dec.l.nextToken()
+			if valTok.Type == LBRACE && f.kind == reflect.Struct {
+				dec.decodeStructInto(f, fieldPtr)
+			} else {
+				dec.decodeValueWithToken(f, fieldPtr, valTok)
+			}
 		} else if next.Type == LBRACE {
-			if f.isBlock && f.structInfo != nil {
-				dec.decodeStruct(f.structInfo, fieldPtr)
+			if f.kind == reflect.Struct {
+				dec.decodeStructInto(f, fieldPtr)
 			} else {
 				dec.skipValue()
 			}
@@ -94,13 +104,34 @@ func (dec *NeoDecoder) decodeStruct(info *neoStructInfo, ptr unsafe.Pointer) err
 	return dec.err
 }
 
-func (dec *NeoDecoder) decodeValue(f *neoField, ptr unsafe.Pointer) {
-	tok := dec.l.nextToken()
-	if f.elemType == durationType && tok.Type == DUR {
+func (dec *NeoDecoder) decodeStructInto(f *neoField, fieldPtr unsafe.Pointer) {
+	targetPtr := fieldPtr
+	if f.isPointer {
+		if *(*unsafe.Pointer)(fieldPtr) == nil {
+			newVal := reflect.New(f.elemType.Elem())
+			*(*unsafe.Pointer)(fieldPtr) = unsafe.Pointer(newVal.Pointer())
+		}
+		targetPtr = *(*unsafe.Pointer)(fieldPtr)
+	}
+	dec.decodeStruct(f.structInfo, targetPtr)
+}
+
+func (dec *NeoDecoder) decodeValueWithToken(f *neoField, ptr unsafe.Pointer, tok Token) {
+	targetPtr := ptr
+	if f.isPointer {
+		if *(*unsafe.Pointer)(ptr) == nil {
+			newVal := reflect.New(f.elemType.Elem())
+			*(*unsafe.Pointer)(ptr) = unsafe.Pointer(newVal.Pointer())
+		}
+		targetPtr = *(*unsafe.Pointer)(ptr)
+	}
+
+	if f.elemType == durationType || (f.isPointer && f.elemType.Elem() == durationType) {
 		d, _ := time.ParseDuration(BytesToString(tok.Literal))
-		*(*time.Duration)(ptr) = d
+		*(*time.Duration)(targetPtr) = d
 		return
 	}
+
 	switch f.kind {
 	case reflect.String:
 		s, ok := dec.stringCache[BytesToString(tok.Literal)]
@@ -108,23 +139,23 @@ func (dec *NeoDecoder) decodeValue(f *neoField, ptr unsafe.Pointer) {
 			s = string(tok.Literal)
 			dec.stringCache[s] = s
 		}
-		*(*string)(ptr) = s
+		*(*string)(targetPtr) = s
 	case reflect.Int:
-		*(*int)(ptr) = int(dec.parseInt(tok.Literal))
+		*(*int)(targetPtr) = int(dec.parseInt(tok.Literal))
 	case reflect.Int64:
-		*(*int64)(ptr) = dec.parseInt(tok.Literal)
+		*(*int64)(targetPtr) = dec.parseInt(tok.Literal)
 	case reflect.Bool:
 		if len(tok.Literal) == 4 && tok.Literal[0] == 't' {
-			*(*bool)(ptr) = true
+			*(*bool)(targetPtr) = true
 		} else {
-			*(*bool)(ptr) = false
+			*(*bool)(targetPtr) = false
 		}
 	case reflect.Float64:
 		f64, _ := strconv.ParseFloat(BytesToString(tok.Literal), 64)
-		*(*float64)(ptr) = f64
+		*(*float64)(targetPtr) = f64
 	case reflect.Float32:
 		f64, _ := strconv.ParseFloat(BytesToString(tok.Literal), 32)
-		*(*float32)(ptr) = float32(f64)
+		*(*float32)(targetPtr) = float32(f64)
 	}
 }
 
@@ -141,13 +172,26 @@ func (dec *NeoDecoder) parseInt(b []byte) int64 {
 	return res
 }
 
+func (dec *NeoDecoder) skipField() {
+	next := dec.l.nextToken()
+	if next.Type == ASSIGN {
+		dec.skipValue()
+	} else if next.Type == LBRACE {
+		dec.skipBraces()
+	}
+}
+
 func (dec *NeoDecoder) skipValue() {
 	tok := dec.l.nextToken()
 	if tok.Type == LBRACE {
-		depth := 1
-		for depth > 0 {
-			t := dec.l.nextToken()
-			if t.Type == LBRACE { depth++ } else if t.Type == RBRACE { depth-- } else if t.Type == EOF { break }
-		}
+		dec.skipBraces()
+	}
+}
+
+func (dec *NeoDecoder) skipBraces() {
+	depth := 1
+	for depth > 0 {
+		t := dec.l.nextToken()
+		if t.Type == LBRACE { depth++ } else if t.Type == RBRACE { depth-- } else if t.Type == EOF { break }
 	}
 }

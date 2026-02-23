@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strconv"
 	"sync"
+	"time"
 	"unsafe"
 )
 
@@ -50,13 +51,10 @@ func (enc *NeoEncoder) Encode(v any) error {
 	}
 
 	if rv.Kind() != reflect.Struct {
-		// Only supporting structs at top level for Neo for now
 		return nil
 	}
 
 	if !rv.CanAddr() {
-		// If not addressable, we might need to copy it to a new pointer or fail
-		// For Neo, we expect pointers for maximum performance
 		return fmt.Errorf("NeoEncoder: value must be addressable (pass a pointer)")
 	}
 	info := getNeoStructInfo(rv.Type())
@@ -66,17 +64,19 @@ func (enc *NeoEncoder) Encode(v any) error {
 }
 
 func (enc *NeoEncoder) encodeStruct(info *neoStructInfo, ptr unsafe.Pointer) error {
-	for i, f := range info.fields {
-		if i > 0 {
-			enc.writeNewLine()
-		}
-
+	first := true
+	for _, f := range info.fields {
 		fieldPtr := unsafe.Pointer(uintptr(ptr) + f.offset)
 
 		// Check omitempty
 		if f.tag.Omitempty && enc.isZero(f, fieldPtr) {
 			continue
 		}
+
+		if !first {
+			enc.writeNewLine()
+		}
+		first = false
 
 		enc.writeIndent()
 		enc.write(f.nameBytes)
@@ -88,6 +88,19 @@ func (enc *NeoEncoder) encodeStruct(info *neoStructInfo, ptr unsafe.Pointer) err
 }
 
 func (enc *NeoEncoder) encodeField(f neoField, ptr unsafe.Pointer) {
+	if f.isPointer {
+		ptr = *(*unsafe.Pointer)(ptr)
+		if ptr == nil {
+			return
+		}
+	}
+
+	if f.elemType == durationType {
+		d := *(*time.Duration)(ptr)
+		enc.writeString(d.String())
+		return
+	}
+
 	switch f.kind {
 	case reflect.String:
 		enc.writeString("\"")
@@ -120,6 +133,9 @@ func (enc *NeoEncoder) encodeField(f neoField, ptr unsafe.Pointer) {
 }
 
 func (enc *NeoEncoder) isZero(f neoField, ptr unsafe.Pointer) bool {
+	if f.isPointer {
+		return *(*unsafe.Pointer)(ptr) == nil
+	}
 	switch f.kind {
 	case reflect.String:
 		return unsafeGetString(ptr) == ""
@@ -129,8 +145,6 @@ func (enc *NeoEncoder) isZero(f neoField, ptr unsafe.Pointer) bool {
 		return unsafeGetInt64(ptr) == 0
 	case reflect.Bool:
 		return !unsafeGetBool(ptr)
-	case reflect.Pointer:
-		return *(*unsafe.Pointer)(ptr) == nil
 	}
 	return false
 }
@@ -149,26 +163,22 @@ func (enc *NeoEncoder) writeString(s string) {
 	_, enc.err = enc.w.WriteString(s)
 }
 
+var indents = "\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t"
+
 func (enc *NeoEncoder) writeIndent() {
-	for i := 0; i < enc.indent; i++ {
-		enc.writeString("\t")
+	n := enc.indent
+	for n > len(indents) {
+		enc.writeString(indents)
+		n -= len(indents)
+	}
+	if n > 0 {
+		enc.writeString(indents[:n])
 	}
 }
 
 func (enc *NeoEncoder) writeNewLine() {
-	enc.writeString("\n")
-}
-
-func (enc *NeoEncoder) encodeSlice(f neoField, ptr unsafe.Pointer) {
-	header := (*reflect.SliceHeader)(ptr)
-	if header.Len == 0 {
-		enc.writeString("[]")
+	if enc.err != nil {
 		return
 	}
-
-	enc.writeString("[")
-	// This is tricky because we need to know the size of the element
-	// and its encoding logic. For now, Neo is a proof-of-concept.
-	// In a full implementation, we would pre-calculate element size.
-	enc.writeString("...]") // Placeholder
+	enc.err = enc.w.WriteByte('\n')
 }

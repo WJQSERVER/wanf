@@ -235,6 +235,7 @@ database {
 有关内部实现、标签使用和流式 API 的更多信息，请参阅 `docs` 目录：
 
 - [内部实现与优化](./docs/internal.md)
+- [Neo 极速编解码器](./docs/neo.md)
 - [流式 API](./docs/streaming.md)
 - [结构体标签 (wanf tag)](./docs/tags.md)
 - [编码格式详解](./docs/encoding_formats.md)

@@ -49,23 +49,14 @@ WANF 广泛使用 `sync.Pool` 来重用临时对象，以减轻垃圾回收（GC
 
 ## 7. Neo - 极速编解码器 (Ultra-Fast Codec)
 
-Neo 是 WANF 库中的一个实验性编解码器，旨在提供原生流式、近乎 0 分配的极致性能。
+Neo 是 WANF 库中的一个实验性编解码器，旨在提供原生流式、近乎 0 分配的极致性能。它通过使用 `unsafe` 字段访问和预计算哈希表绕过了大部分 Go 反射的性能瓶颈。
 
-### 7.1 Neo 的核心优化
-- **Unsafe 字段访问**: 使用 `unsafe.Offset` 提前缓存字段偏移量，完全绕过 `reflect.Value.Set/Get` 的开销。
-- **0 分配编码**: `NeoEncoder` 实现了在编码过程中的 **0 分配**。
-- **低分配解码**: `NeoDecoder` 结合了 `NeoLexer` 的池化技术，将解码分配降至极低。
-- **原生流式**: 完美支持 `io.Reader` 和 `io.Writer`。
+有关 Neo 的详细设计、优化细节及使用方式，请参阅专用文档：
 
-### 7.2 使用方法
-```go
-// 编码
-enc := wanf.NewNeoEncoder(writer)
-enc.Encode(cfg)
-enc.Close()
+👉 **[Neo 详细文档](neo.md)**
 
-// 解码
-dec := wanf.NewNeoDecoder(reader)
-dec.Decode(&cfg)
-dec.Close()
-```
+### 7.1 Neo 的核心优化简述
+- **Unsafe 字段访问**: 提前缓存字段偏移量。
+- **0 分配编码**: 在编码热路径中实现 0 heap allocation。
+- **大小写不敏感哈希匹配**: 通过双哈希表平衡灵活性与性能。
+- **原生流式支持**: 兼容 `io.Reader`/`io.Writer`。
