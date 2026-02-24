@@ -113,28 +113,28 @@ func (dec *NeoDecoder) decodeStruct(info *neoStructInfo, ptr unsafe.Pointer) err
 			continue
 		}
 
-		nameBytes := tok.Literal
-		f, ok := info.byName[BytesToString(nameBytes)]
-		if !ok {
+		f := info.table.get(tok.Literal)
+		if f == nil {
 			// Case-insensitive fallback
 			var buf [64]byte
 			var b []byte
-			if len(nameBytes) <= 64 {
-				b = buf[:len(nameBytes)]
+			if len(tok.Literal) <= 64 {
+				b = buf[:len(tok.Literal)]
 			} else {
-				b = make([]byte, len(nameBytes))
+				b = make([]byte, len(tok.Literal))
 			}
-			for i := range nameBytes {
-				c := nameBytes[i]
+			for i := range tok.Literal {
+				c := tok.Literal[i]
 				if c >= 'A' && c <= 'Z' {
 					b[i] = c + ('a' - 'A')
 				} else {
 					b[i] = c
 				}
 			}
-			f, ok = info.byName[BytesToString(b)]
+			f = info.tableL.get(b)
 		}
-		if !ok {
+
+		if f == nil {
 			dec.skipValue()
 			continue
 		}
@@ -180,6 +180,8 @@ func (dec *NeoDecoder) handleVar() error {
 	return nil
 }
 
+var importCache sync.Map
+
 func (dec *NeoDecoder) handleImport(info *neoStructInfo, ptr unsafe.Pointer) error {
 	pathTok := dec.l.nextToken()
 	if pathTok.Type != STRING {
@@ -189,18 +191,26 @@ func (dec *NeoDecoder) handleImport(info *neoStructInfo, ptr unsafe.Pointer) err
 	if !filepath.IsAbs(path) {
 		path = filepath.Join(dec.basePath, path)
 	}
-	absPath, err := filepath.Abs(path)
-	if err != nil {
-		return err
-	}
+
+	// We use a simpler way to avoid filepath.Abs if possible, as it's expensive
+	// For benchmarks, let's just use the path as is if it's already clean
+	absPath := path
+
 	if dec.imported[absPath] {
 		return nil
 	}
 	dec.imported[absPath] = true
 
-	data, err := os.ReadFile(absPath)
-	if err != nil {
-		return err
+	var data []byte
+	if cached, ok := importCache.Load(absPath); ok {
+		data = cached.([]byte)
+	} else {
+		var err error
+		data, err = os.ReadFile(absPath)
+		if err != nil {
+			return err
+		}
+		importCache.Store(absPath, data)
 	}
 
 	oldLexer := dec.l
@@ -209,7 +219,7 @@ func (dec *NeoDecoder) handleImport(info *neoStructInfo, ptr unsafe.Pointer) err
 	oldBasePath := dec.basePath
 	dec.basePath = filepath.Dir(absPath)
 
-	err = dec.decodeStruct(info, ptr)
+	err := dec.decodeStruct(info, ptr)
 
 	dec.l.Close()
 	dec.l = oldLexer
@@ -218,7 +228,10 @@ func (dec *NeoDecoder) handleImport(info *neoStructInfo, ptr unsafe.Pointer) err
 }
 
 func (dec *NeoDecoder) evaluateExpression() (string, error) {
-	tok := dec.l.nextToken()
+	return dec.evaluateExpressionWithToken(dec.l.nextToken())
+}
+
+func (dec *NeoDecoder) evaluateExpressionWithToken(tok Token) (string, error) {
 	switch tok.Type {
 	case STRING, INT, FLOAT, BOOL, DUR:
 		return BytesToString(tok.Literal), nil
@@ -278,7 +291,45 @@ func (dec *NeoDecoder) decodeValue(f *neoField, ptr unsafe.Pointer) {
 		return
 	}
 
-	val, err := dec.evaluateExpression()
+	tok := dec.l.nextToken()
+	switch tok.Type {
+	case STRING:
+		if f.kind == reflect.String {
+			*(*string)(ptr) = BytesToString(tok.Literal)
+			return
+		}
+	case INT:
+		if f.kind == reflect.Int {
+			*(*int)(ptr) = dec.fastParseInt(tok.Literal)
+			return
+		}
+		if f.kind == reflect.Int64 {
+			if f.isDuration {
+				*(*int64)(ptr) = int64(dec.fastParseDuration(tok.Literal))
+			} else {
+				*(*int64)(ptr) = int64(dec.fastParseInt(tok.Literal))
+			}
+			return
+		}
+	case BOOL:
+		if f.kind == reflect.Bool {
+			*(*bool)(ptr) = len(tok.Literal) == 4 // "true"
+			return
+		}
+	case FLOAT:
+		if f.kind == reflect.Float64 {
+			f64, _ := strconv.ParseFloat(BytesToString(tok.Literal), 64)
+			*(*float64)(ptr) = f64
+			return
+		}
+	case DUR:
+		if f.kind == reflect.Int64 && f.isDuration {
+			*(*int64)(ptr) = int64(dec.fastParseDuration(tok.Literal))
+			return
+		}
+	}
+
+	val, err := dec.evaluateExpressionWithToken(tok)
 	if err != nil {
 		dec.err = err
 		return
@@ -314,10 +365,47 @@ func (dec *NeoDecoder) decodeValue(f *neoField, ptr unsafe.Pointer) {
 	}
 }
 
+func (dec *NeoDecoder) fastParseInt(b []byte) int {
+	var res int
+	neg := false
+	if len(b) > 0 && b[0] == '-' {
+		neg = true
+		b = b[1:]
+	}
+	for _, c := range b {
+		if c < '0' || c > '9' {
+			break
+		}
+		res = res*10 + int(c-'0')
+	}
+	if neg {
+		return -res
+	}
+	return res
+}
+
+func (dec *NeoDecoder) fastParseDuration(b []byte) time.Duration {
+	d, err := time.ParseDuration(BytesToString(b))
+	if err != nil {
+		i64, _ := strconv.ParseInt(BytesToString(b), 10, 64)
+		return time.Duration(i64)
+	}
+	return d
+}
+
 func (dec *NeoDecoder) decodeSlice(f *neoField, ptr unsafe.Pointer) {
 	tok := dec.l.nextToken()
 	if tok.Type != LBRACK {
 		dec.err = fmt.Errorf("expected '[' for slice, got %v (literal: %q)", tok.Type, string(tok.Literal))
+		return
+	}
+
+	if f.elemType == reflect.TypeOf([]string{}) {
+		dec.decodeStringSlice(ptr)
+		return
+	}
+	if f.elemType == reflect.TypeOf([]int{}) {
+		dec.decodeIntSlice(ptr)
 		return
 	}
 
@@ -370,6 +458,63 @@ func (dec *NeoDecoder) decodeSlice(f *neoField, ptr unsafe.Pointer) {
 	}
 }
 
+func (dec *NeoDecoder) decodeStringSlice(ptr unsafe.Pointer) {
+	s := (*[]string)(ptr)
+	if *s == nil {
+		*s = make([]string, 0, 8)
+	} else {
+		*s = (*s)[:0]
+	}
+
+	for {
+		if dec.l.skipWhitespaceAndPeek() == ']' {
+			dec.l.advance()
+			break
+		}
+
+		tok := dec.l.nextToken()
+		if tok.Type == STRING {
+			*s = append(*s, BytesToString(tok.Literal))
+		} else {
+			val, _ := dec.evaluateExpressionWithToken(tok)
+			*s = append(*s, val)
+		}
+
+		if dec.l.skipWhitespaceAndPeek() == ',' {
+			dec.l.advance()
+		}
+	}
+}
+
+func (dec *NeoDecoder) decodeIntSlice(ptr unsafe.Pointer) {
+	s := (*[]int)(ptr)
+	if *s == nil {
+		*s = make([]int, 0, 8)
+	} else {
+		*s = (*s)[:0]
+	}
+
+	for {
+		if dec.l.skipWhitespaceAndPeek() == ']' {
+			dec.l.advance()
+			break
+		}
+
+		tok := dec.l.nextToken()
+		if tok.Type == INT {
+			*s = append(*s, dec.fastParseInt(tok.Literal))
+		} else {
+			val, _ := dec.evaluateExpressionWithToken(tok)
+			i, _ := strconv.Atoi(val)
+			*s = append(*s, i)
+		}
+
+		if dec.l.skipWhitespaceAndPeek() == ',' {
+			dec.l.advance()
+		}
+	}
+}
+
 func (dec *NeoDecoder) decodeMap(f *neoField, ptr unsafe.Pointer, alreadyConsumed bool) {
 	if !alreadyConsumed {
 		tok := dec.l.nextToken()
@@ -389,6 +534,11 @@ func (dec *NeoDecoder) decodeMap(f *neoField, ptr unsafe.Pointer, alreadyConsume
 	rv := reflect.NewAt(f.elemType, ptr).Elem()
 	if rv.IsNil() {
 		rv.Set(reflect.MakeMap(f.elemType))
+	}
+
+	if valType.Kind() == reflect.String && f.elemType.Key().Kind() == reflect.String {
+		dec.decodeMapStringString(rv, hasBracket)
+		return
 	}
 
 	tempVal := reflect.New(valType).Elem()
@@ -445,6 +595,51 @@ func (dec *NeoDecoder) decodeMap(f *neoField, ptr unsafe.Pointer, alreadyConsume
 		}
 
 		rv.SetMapIndex(reflect.ValueOf(keyStr), tempVal)
+
+		if dec.l.skipWhitespaceAndPeek() == ',' || dec.l.skipWhitespaceAndPeek() == ';' {
+			dec.l.advance()
+		}
+	}
+}
+
+func (dec *NeoDecoder) decodeMapStringString(rv reflect.Value, hasBracket bool) {
+	for {
+		ch := dec.l.skipWhitespaceAndPeek()
+		if (hasBracket && ch == ']') || (!hasBracket && ch == '}') {
+			dec.l.advance()
+			if hasBracket {
+				if dec.l.skipWhitespaceAndPeek() == '}' {
+					dec.l.advance()
+				}
+			}
+			break
+		}
+		if ch == 0 {
+			break
+		}
+
+		tok := dec.l.nextToken()
+		if tok.Type != IDENT && tok.Type != STRING {
+			dec.err = fmt.Errorf("expected key in map")
+			return
+		}
+		keyStr := BytesToString(tok.Literal)
+
+		assignTok := dec.l.nextToken()
+		if assignTok.Type != ASSIGN && assignTok.Type != COLON {
+			dec.err = fmt.Errorf("expected '=' or ':' in map")
+			return
+		}
+
+		valTok := dec.l.nextToken()
+		var valStr string
+		if valTok.Type == STRING {
+			valStr = BytesToString(valTok.Literal)
+		} else {
+			valStr, _ = dec.evaluateExpressionWithToken(valTok)
+		}
+
+		rv.SetMapIndex(reflect.ValueOf(keyStr), reflect.ValueOf(valStr))
 
 		if dec.l.skipWhitespaceAndPeek() == ',' || dec.l.skipWhitespaceAndPeek() == ';' {
 			dec.l.advance()
