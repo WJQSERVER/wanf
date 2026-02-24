@@ -29,6 +29,7 @@ const (
 	ASSIGN          TokenType = "="
 	COMMA           TokenType = ","
 	SEMICOLON       TokenType = ";"
+	COLON           TokenType = ":"
 	LBRACE          TokenType = "{"
 	RBRACE          TokenType = "}"
 	LBRACK          TokenType = "["

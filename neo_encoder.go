@@ -18,6 +18,8 @@ type NeoEncoder struct {
 	tmpBuf [64]byte // For numbers
 }
 
+var neoTabs = []byte("\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t")
+
 var neoEncoderPool = sync.Pool{
 	New: func() any {
 		return &NeoEncoder{}
@@ -35,9 +37,11 @@ func NewNeoEncoder(w io.Writer) *NeoEncoder {
 }
 
 func (enc *NeoEncoder) Close() {
-	enc.w.Flush()
-	bufioWriterPool.Put(enc.w)
-	enc.w = nil
+	if enc.w != nil {
+		enc.w.Flush()
+		bufioWriterPool.Put(enc.w)
+		enc.w = nil
+	}
 	neoEncoderPool.Put(enc)
 }
 
@@ -51,13 +55,10 @@ func (enc *NeoEncoder) Encode(v any) error {
 	}
 
 	if rv.Kind() != reflect.Struct {
-		// Only supporting structs at top level for Neo for now
 		return nil
 	}
 
 	if !rv.CanAddr() {
-		// If not addressable, we might need to copy it to a new pointer or fail
-		// For Neo, we expect pointers for maximum performance
 		return fmt.Errorf("NeoEncoder: value must be addressable (pass a pointer)")
 	}
 	info := getNeoStructInfo(rv.Type())
@@ -133,12 +134,19 @@ func (enc *NeoEncoder) encodeField(f neoField, ptr unsafe.Pointer) {
 			enc.writeIndent()
 			enc.writeString("}")
 		}
+	case reflect.Slice:
+		enc.encodeSlice(f, ptr)
+	case reflect.Map:
+		enc.encodeMap(f, ptr)
 	}
 }
 
 func (enc *NeoEncoder) isZero(f neoField, ptr unsafe.Pointer) bool {
 	if f.isPtr {
-		return *(*unsafe.Pointer)(ptr) == nil
+		ptr = *(*unsafe.Pointer)(ptr)
+		if ptr == nil {
+			return true
+		}
 	}
 	switch f.kind {
 	case reflect.String:
@@ -149,8 +157,12 @@ func (enc *NeoEncoder) isZero(f neoField, ptr unsafe.Pointer) bool {
 		return unsafeGetInt64(ptr) == 0
 	case reflect.Bool:
 		return !unsafeGetBool(ptr)
-	case reflect.Pointer:
-		return *(*unsafe.Pointer)(ptr) == nil
+	case reflect.Slice:
+		rv := reflect.NewAt(f.elemType, ptr).Elem()
+		return rv.Len() == 0
+	case reflect.Map:
+		rv := reflect.NewAt(f.elemType, ptr).Elem()
+		return rv.IsNil() || rv.Len() == 0
 	}
 	return false
 }
@@ -170,9 +182,12 @@ func (enc *NeoEncoder) writeString(s string) {
 }
 
 func (enc *NeoEncoder) writeIndent() {
-	for i := 0; i < enc.indent; i++ {
-		enc.writeString("\t")
+	n := enc.indent
+	for n > len(neoTabs) {
+		enc.write(neoTabs)
+		n -= len(neoTabs)
 	}
+	enc.write(neoTabs[:n])
 }
 
 func (enc *NeoEncoder) writeNewLine() {
@@ -180,15 +195,132 @@ func (enc *NeoEncoder) writeNewLine() {
 }
 
 func (enc *NeoEncoder) encodeSlice(f neoField, ptr unsafe.Pointer) {
-	header := (*reflect.SliceHeader)(ptr)
-	if header.Len == 0 {
+	rv := reflect.NewAt(f.elemType, ptr).Elem()
+	if rv.Len() == 0 {
 		enc.writeString("[]")
 		return
 	}
 
 	enc.writeString("[")
-	// This is tricky because we need to know the size of the element
-	// and its encoding logic. For now, Neo is a proof-of-concept.
-	// In a full implementation, we would pre-calculate element size.
-	enc.writeString("...]") // Placeholder
+	elemType := f.elemType.Elem()
+
+	fakeField := neoField{
+		kind:     elemType.Kind(),
+		elemType: elemType,
+	}
+	if elemType.Kind() == reflect.Struct {
+		fakeField.structInfo = getNeoStructInfo(elemType)
+	}
+
+	for i := 0; i < rv.Len(); i++ {
+		if i > 0 {
+			enc.writeString(", ")
+		}
+		elem := rv.Index(i)
+		enc.encodeReflectValue(fakeField, elem)
+	}
+	enc.writeString("]")
+}
+
+func (enc *NeoEncoder) encodeMap(f neoField, ptr unsafe.Pointer) {
+	rv := reflect.NewAt(f.elemType, ptr).Elem()
+	if rv.IsNil() || rv.Len() == 0 {
+		enc.writeString("{[ ]}")
+		return
+	}
+
+	enc.writeString("{[")
+	enc.writeNewLine()
+	enc.indent++
+
+	valType := f.elemType.Elem()
+	fakeField := neoField{
+		kind:     valType.Kind(),
+		elemType: valType,
+	}
+	if valType.Kind() == reflect.Struct {
+		fakeField.structInfo = getNeoStructInfo(valType)
+	}
+
+	entriesPtr := mapEntrySlicePool.Get().(*[]mapEntry)
+	entries := (*entriesPtr)[:0]
+
+	iter := rv.MapRange()
+	for iter.Next() {
+		k := iter.Key()
+		entries = append(entries, mapEntry{key: k, keyStr: k.String(), value: iter.Value()})
+	}
+
+	if len(entries) > 1 {
+		quickSortMapEntries(entries)
+	}
+
+	for i, entry := range entries {
+		if i > 0 {
+			enc.writeNewLine()
+		}
+		enc.writeIndent()
+		enc.writeString(entry.keyStr)
+		enc.writeString(" = ")
+
+		enc.encodeReflectValue(fakeField, entry.value)
+		enc.writeString(",")
+	}
+
+	if cap(entries) <= maxPoolSliceCap {
+		*entriesPtr = entries[:0]
+		mapEntrySlicePool.Put(entriesPtr)
+	}
+
+	enc.indent--
+	enc.writeNewLine()
+	enc.writeIndent()
+	enc.writeString("]}")
+}
+
+func (enc *NeoEncoder) encodeReflectValue(f neoField, v reflect.Value) {
+	switch f.kind {
+	case reflect.String:
+		enc.writeString("\"")
+		enc.writeString(v.String())
+		enc.writeString("\"")
+	case reflect.Int, reflect.Int64:
+		if f.isDuration {
+			enc.writeString(time.Duration(v.Int()).String())
+		} else {
+			enc.write(strconv.AppendInt(enc.tmpBuf[:0], v.Int(), 10))
+		}
+	case reflect.Bool:
+		if v.Bool() {
+			enc.writeString("true")
+		} else {
+			enc.writeString("false")
+		}
+	case reflect.Float64:
+		enc.write(strconv.AppendFloat(enc.tmpBuf[:0], v.Float(), 'f', -1, 64))
+	case reflect.Struct:
+		if f.structInfo != nil {
+			if v.CanAddr() {
+				enc.writeString("{")
+				enc.writeNewLine()
+				enc.indent++
+				enc.encodeStruct(f.structInfo, unsafe.Pointer(v.UnsafeAddr()))
+				enc.indent--
+				enc.writeNewLine()
+				enc.writeIndent()
+				enc.writeString("}")
+			} else {
+				v2 := reflect.New(v.Type()).Elem()
+				v2.Set(v)
+				enc.writeString("{")
+				enc.writeNewLine()
+				enc.indent++
+				enc.encodeStruct(f.structInfo, unsafe.Pointer(v2.UnsafeAddr()))
+				enc.indent--
+				enc.writeNewLine()
+				enc.writeIndent()
+				enc.writeString("}")
+			}
+		}
+	}
 }

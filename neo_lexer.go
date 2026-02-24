@@ -13,9 +13,35 @@ var (
 	rbrackLit    = []byte("]")
 	commaLit     = []byte(",")
 	semicolonLit = []byte(";")
+	lparenLit    = []byte("(")
+	rparenLit    = []byte(")")
+	colonLit     = []byte(":")
 	importLit    = []byte("import")
 	varLit       = []byte("var")
+	dollarLbraceLit = []byte("${")
 )
+
+var isWhitespaceTable = [256]bool{
+	' ':  true,
+	'\t': true,
+	'\n': true,
+	'\r': true,
+}
+
+var singleCharTokens = [256]Token{}
+
+func init() {
+	singleCharTokens['='] = Token{Type: ASSIGN, Literal: assignLit}
+	singleCharTokens['{'] = Token{Type: LBRACE, Literal: lbraceLit}
+	singleCharTokens['}'] = Token{Type: RBRACE, Literal: rbraceLit}
+	singleCharTokens['['] = Token{Type: LBRACK, Literal: lbrackLit}
+	singleCharTokens[']'] = Token{Type: RBRACK, Literal: rbrackLit}
+	singleCharTokens[','] = Token{Type: COMMA, Literal: commaLit}
+	singleCharTokens[';'] = Token{Type: SEMICOLON, Literal: semicolonLit}
+	singleCharTokens[':'] = Token{Type: COLON, Literal: colonLit}
+	singleCharTokens['('] = Token{Type: LPAREN, Literal: lparenLit}
+	singleCharTokens[')'] = Token{Type: RPAREN, Literal: rparenLit}
+}
 
 type NeoLexer struct {
 	input []byte
@@ -61,6 +87,8 @@ func (l *NeoLexer) SetInput(data []byte) {
 	l.pos = 0
 	l.reader = nil
 	l.isStreaming = false
+	l.line = 1
+	l.col = 1
 }
 
 func (l *NeoLexer) Close() {
@@ -70,6 +98,10 @@ func (l *NeoLexer) Close() {
 }
 
 func (l *NeoLexer) nextToken() Token {
+	if !l.isStreaming {
+		return l.nextTokenFast()
+	}
+
 	l.skipWhitespace()
 
 	ch := l.peek()
@@ -79,28 +111,21 @@ func (l *NeoLexer) nextToken() Token {
 
 	startLine, startCol := l.line, l.col
 
+	if tok := singleCharTokens[ch]; tok.Type != "" {
+		l.advance()
+		tok.Line = startLine
+		tok.Column = startCol
+		return tok
+	}
+
 	switch ch {
-	case '=':
+	case '$':
 		l.advance()
-		return Token{Type: ASSIGN, Literal: assignLit, Line: startLine, Column: startCol}
-	case '{':
-		l.advance()
-		return Token{Type: LBRACE, Literal: lbraceLit, Line: startLine, Column: startCol}
-	case '}':
-		l.advance()
-		return Token{Type: RBRACE, Literal: rbraceLit, Line: startLine, Column: startCol}
-	case '[':
-		l.advance()
-		return Token{Type: LBRACK, Literal: lbrackLit, Line: startLine, Column: startCol}
-	case ']':
-		l.advance()
-		return Token{Type: RBRACK, Literal: rbrackLit, Line: startLine, Column: startCol}
-	case ',':
-		l.advance()
-		return Token{Type: COMMA, Literal: commaLit, Line: startLine, Column: startCol}
-	case ';':
-		l.advance()
-		return Token{Type: SEMICOLON, Literal: semicolonLit, Line: startLine, Column: startCol}
+		if l.peek() == '{' {
+			l.advance()
+			return Token{Type: DOLLAR_LBRACE, Literal: dollarLbraceLit, Line: startLine, Column: startCol}
+		}
+		return Token{Type: ILLEGAL, Literal: []byte{'$'}, Line: startLine, Column: startCol}
 	case '"', '\'':
 		return l.readString(ch)
 	case '`':
@@ -115,6 +140,130 @@ func (l *NeoLexer) nextToken() Token {
 	}
 	l.advance()
 	return Token{Type: ILLEGAL, Literal: []byte{ch}, Line: startLine, Column: startCol}
+}
+
+func (l *NeoLexer) nextTokenFast() Token {
+	for l.pos < l.read {
+		ch := l.input[l.pos]
+		if isWhitespaceTable[ch] {
+			if ch == '\n' {
+				l.line++
+				l.col = 1
+			} else {
+				l.col++
+			}
+			l.pos++
+			continue
+		}
+		if ch == '/' && l.pos+1 < l.read {
+			if l.input[l.pos+1] == '/' {
+				l.pos += 2
+				for l.pos < l.read && l.input[l.pos] != '\n' {
+					l.pos++
+				}
+				continue
+			} else if l.input[l.pos+1] == '*' {
+				l.pos += 2
+				for l.pos < l.read {
+					if l.input[l.pos] == '*' && l.pos+1 < l.read && l.input[l.pos+1] == '/' {
+						l.pos += 2
+						break
+					}
+					if l.input[l.pos] == '\n' {
+						l.line++
+						l.col = 1
+					} else {
+						l.col++
+					}
+					l.pos++
+				}
+				continue
+			}
+		}
+		break
+	}
+
+	if l.pos >= l.read {
+		return Token{Type: EOF, Line: l.line, Column: l.col}
+	}
+
+	startLine, startCol := l.line, l.col
+	ch := l.input[l.pos]
+
+	if tok := singleCharTokens[ch]; tok.Type != "" {
+		l.pos++
+		l.col++
+		tok.Line = startLine
+		tok.Column = startCol
+		return tok
+	}
+
+	l.pos++
+	l.col++
+
+	switch ch {
+	case '$':
+		if l.pos < l.read && l.input[l.pos] == '{' {
+			l.pos++
+			l.col++
+			return Token{Type: DOLLAR_LBRACE, Literal: dollarLbraceLit, Line: startLine, Column: startCol}
+		}
+		return Token{Type: ILLEGAL, Literal: []byte{'$'}, Line: startLine, Column: startCol}
+	case '"', '\'':
+		return l.readStringFast(ch, startLine, startCol)
+	case '`':
+		return l.readRawStringFast(startLine, startCol)
+	default:
+		if (ch >= '0' && ch <= '9') || ch == '-' || ch == '.' {
+			l.pos-- // backtrack
+			l.col--
+			return l.readNumberOrDuration()
+		}
+		if isIdentTable[ch] {
+			l.pos-- // backtrack
+			l.col--
+			return l.readIdentifierOrKeyword()
+		}
+	}
+	return Token{Type: ILLEGAL, Literal: []byte{ch}, Line: startLine, Column: startCol}
+}
+
+func (l *NeoLexer) readStringFast(quote byte, startLine, startCol int) Token {
+	startPos := l.pos
+	for l.pos < l.read && l.input[l.pos] != quote {
+		if l.input[l.pos] == '\n' {
+			l.line++
+			l.col = 1
+		} else {
+			l.col++
+		}
+		l.pos++
+	}
+	lit := l.input[startPos:l.pos]
+	if l.pos < l.read {
+		l.pos++
+		l.col++
+	}
+	return Token{Type: STRING, Literal: lit, Line: startLine, Column: startCol}
+}
+
+func (l *NeoLexer) readRawStringFast(startLine, startCol int) Token {
+	startPos := l.pos
+	for l.pos < l.read && l.input[l.pos] != '`' {
+		if l.input[l.pos] == '\n' {
+			l.line++
+			l.col = 1
+		} else {
+			l.col++
+		}
+		l.pos++
+	}
+	lit := l.input[startPos:l.pos]
+	if l.pos < l.read {
+		l.pos++
+		l.col++
+	}
+	return Token{Type: STRING, Literal: lit, Line: startLine, Column: startCol}
 }
 
 func (l *NeoLexer) peek() byte {
@@ -156,7 +305,7 @@ func (l *NeoLexer) advance() byte {
 func (l *NeoLexer) skipWhitespace() {
 	for {
 		ch := l.peek()
-		if ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' {
+		if isWhitespaceTable[ch] {
 			l.advance()
 		} else if ch == '/' {
 			l.advance()
@@ -208,13 +357,19 @@ func (l *NeoLexer) readIdentifierOrKeyword() Token {
 	if len(lit) == 3 && BytesToString(lit) == "var" {
 		return Token{Type: VAR, Literal: varLit, Line: startLine, Column: startCol}
 	}
+	if len(lit) == 4 && BytesToString(lit) == "true" {
+		return Token{Type: BOOL, Literal: lit, Line: startLine, Column: startCol}
+	}
+	if len(lit) == 5 && BytesToString(lit) == "false" {
+		return Token{Type: BOOL, Literal: lit, Line: startLine, Column: startCol}
+	}
 
 	return Token{Type: IDENT, Literal: lit, Line: startLine, Column: startCol}
 }
 
 func (l *NeoLexer) readString(quote byte) Token {
 	startLine, startCol := l.line, l.col
-	l.advance() // skip quote
+	l.advance()
 	startPos := l.pos
 	l.litBuf = l.litBuf[:0]
 	for l.peek() != quote && l.peek() != 0 {
@@ -223,13 +378,13 @@ func (l *NeoLexer) readString(quote byte) Token {
 			l.litBuf = append(l.litBuf, ch)
 		}
 	}
-	l.advance() // skip quote
+	l.advance()
 	return Token{Type: STRING, Literal: l.getLiteral(startPos, l.pos-1), Line: startLine, Column: startCol}
 }
 
 func (l *NeoLexer) readRawString() Token {
 	startLine, startCol := l.line, l.col
-	l.advance() // skip `
+	l.advance()
 	startPos := l.pos
 	l.litBuf = l.litBuf[:0]
 	for l.peek() != '`' && l.peek() != 0 {
@@ -238,7 +393,7 @@ func (l *NeoLexer) readRawString() Token {
 			l.litBuf = append(l.litBuf, ch)
 		}
 	}
-	l.advance() // skip `
+	l.advance()
 	return Token{Type: STRING, Literal: l.getLiteral(startPos, l.pos-1), Line: startLine, Column: startCol}
 }
 

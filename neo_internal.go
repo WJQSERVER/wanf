@@ -23,10 +23,49 @@ type neoField struct {
 	structInfo   *neoStructInfo
 }
 
+type neoHashEntry struct {
+	keyB  []byte
+	field *neoField
+}
+
+type neoHashTable struct {
+	entries []neoHashEntry
+	mask    uint32
+}
+
+func (t *neoHashTable) get(key []byte) *neoField {
+	if len(t.entries) == 0 {
+		return nil
+	}
+	h := hashBytes(key)
+	idx := h & t.mask
+	for {
+		entry := &t.entries[idx]
+		if entry.field == nil {
+			return nil
+		}
+		if bytes.Equal(entry.keyB, key) {
+			return entry.field
+		}
+		idx = (idx + 1) & t.mask
+	}
+}
+
+func hashBytes(b []byte) uint32 {
+	var h uint32 = 2166136261
+	for _, c := range b {
+		h ^= uint32(c)
+		h *= 16777619
+	}
+	return h
+}
+
 // neoStructInfo caches metadata for a struct type.
 type neoStructInfo struct {
 	fields []neoField
-	byName map[string]*neoField // For decoding
+	byName map[string]*neoField // For standard map lookup fallback
+	table  neoHashTable         // For fast lookup
+	tableL neoHashTable         // For fast case-insensitive lookup
 }
 
 var neoCache sync.Map // map[reflect.Type]*neoStructInfo
@@ -81,16 +120,45 @@ func getNeoStructInfo(t reflect.Type) *neoStructInfo {
 		}
 
 		info.fields = append(info.fields, nf)
-		info.byName[nf.name] = &info.fields[len(info.fields)-1]
-		// 为区分大小写的匹配增加全小写形式的映射
+		ptr := &info.fields[len(info.fields)-1]
+		info.byName[nf.name] = ptr
 		lowerName := strings.ToLower(nf.name)
 		if _, ok := info.byName[lowerName]; !ok {
-			info.byName[lowerName] = &info.fields[len(info.fields)-1]
+			info.byName[lowerName] = ptr
 		}
+	}
+
+	// Build hash tables
+	size := 1
+	for size < len(info.byName)*2 {
+		size *= 2
+	}
+	info.table.entries = make([]neoHashEntry, size)
+	info.table.mask = uint32(size - 1)
+	info.tableL.entries = make([]neoHashEntry, size)
+	info.tableL.mask = uint32(size - 1)
+
+	for _, f := range info.fields {
+		insertHashTable(&info.table, []byte(f.name), &f)
+		insertHashTable(&info.tableL, []byte(strings.ToLower(f.name)), &f)
 	}
 
 	neoCache.Store(t, info)
 	return info
+}
+
+func insertHashTable(t *neoHashTable, key []byte, f *neoField) {
+	h := hashBytes(key)
+	idx := h & t.mask
+	for {
+		entry := &t.entries[idx]
+		if entry.field == nil {
+			entry.keyB = key
+			entry.field = f
+			return
+		}
+		idx = (idx + 1) & t.mask
+	}
 }
 
 // Unsafe helpers
