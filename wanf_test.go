@@ -141,6 +141,34 @@ func TestDecode_CompactFormat(t *testing.T) {
 	}
 }
 
+func TestBlockCaseInsensitivity(t *testing.T) {
+	tests := []struct {
+		name string
+		data string
+	}{
+		{"lowercase_block", `server { port = 8080 }`},
+		{"uppercase_block", `SERVER { port = 8080 }`},
+		{"mixedcase_block", `Server { port = 8080 }`},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var cfg struct {
+				Server struct {
+					Port int `wanf:"port"`
+				} `wanf:"server"`
+			}
+			err := Decode([]byte(tc.data), &cfg)
+			if err != nil {
+				t.Fatalf("Decode failed: %v", err)
+			}
+			if cfg.Server.Port != 8080 {
+				t.Errorf("Expected port 8080, got %d", cfg.Server.Port)
+			}
+		})
+	}
+}
+
 func TestFieldMatching_Fallback(t *testing.T) {
 	type Config struct {
 		TaggedField   string `wanf:"tagged_field"`
