@@ -15,7 +15,7 @@ import (
 type NeoDecoder struct {
 	l         *NeoLexer
 	err       error
-	variables map[string]string
+	variables map[string]any
 	basePath  string
 	imported  map[string]bool
 }
@@ -23,7 +23,7 @@ type NeoDecoder struct {
 var neoDecoderPool = sync.Pool{
 	New: func() any {
 		return &NeoDecoder{
-			variables: make(map[string]string),
+			variables: make(map[string]any),
 			basePath:  ".",
 			imported:  make(map[string]bool),
 		}
@@ -172,12 +172,131 @@ func (dec *NeoDecoder) handleVar() error {
 	if dec.l.nextToken().Type != ASSIGN {
 		return fmt.Errorf("expected '=' after variable name")
 	}
-	val, err := dec.evaluateExpression()
-	if err != nil {
-		return err
+
+	// Peek at the value token to preserve type
+	valTok := dec.l.nextToken()
+	name := BytesToString(nameTok.Literal)
+
+	switch valTok.Type {
+	case STRING:
+		dec.variables[name] = BytesToString(valTok.Literal)
+	case INT:
+		dec.variables[name] = dec.fastParseInt(valTok.Literal)
+	case FLOAT:
+		f64, _ := strconv.ParseFloat(BytesToString(valTok.Literal), 64)
+		dec.variables[name] = f64
+	case BOOL:
+		dec.variables[name] = len(valTok.Literal) == 4 // "true"
+	case DUR:
+		dec.variables[name] = dec.fastParseDuration(valTok.Literal)
+	default:
+		// Complex expression like ${other_var}, env(), etc.
+		val, err := dec.evaluateExpressionWithToken(valTok)
+		if err != nil {
+			return err
+		}
+		dec.variables[name] = val
 	}
-	dec.variables[BytesToString(nameTok.Literal)] = val
+
 	return nil
+}
+
+// trySetVariable looks up the variable name from the consumed DOLLAR_LBRACE token
+// and tries to set the field directly with the typed value.
+// It returns true if the variable was found and set, false if it should fall through.
+func (dec *NeoDecoder) trySetVariable(ptr unsafe.Pointer, f *neoField) bool {
+	varTok := dec.l.nextToken()
+	if varTok.Type != IDENT {
+		return false
+	}
+	if dec.l.nextToken().Type != RBRACE {
+		return false
+	}
+
+	val, ok := dec.variables[BytesToString(varTok.Literal)]
+	if !ok {
+		return false
+	}
+
+	switch v := val.(type) {
+	case string:
+		if f.kind == reflect.String {
+			*(*string)(ptr) = v
+			return true
+		}
+	case int:
+		if f.kind == reflect.Int {
+			*(*int)(ptr) = v
+			return true
+		}
+		if f.kind == reflect.Int64 {
+			*(*int64)(ptr) = int64(v)
+			return true
+		}
+		if f.kind == reflect.Int8 {
+			*(*int8)(ptr) = int8(v)
+			return true
+		}
+		if f.kind == reflect.Int16 {
+			*(*int16)(ptr) = int16(v)
+			return true
+		}
+		if f.kind == reflect.Int32 {
+			*(*int32)(ptr) = int32(v)
+			return true
+		}
+		if f.kind == reflect.Uint {
+			*(*uint)(ptr) = uint(v)
+			return true
+		}
+		if f.kind == reflect.Uint8 {
+			*(*uint8)(ptr) = uint8(v)
+			return true
+		}
+		if f.kind == reflect.Uint16 {
+			*(*uint16)(ptr) = uint16(v)
+			return true
+		}
+		if f.kind == reflect.Uint32 {
+			*(*uint32)(ptr) = uint32(v)
+			return true
+		}
+		if f.kind == reflect.Uint64 {
+			*(*uint64)(ptr) = uint64(v)
+			return true
+		}
+	case int64:
+		if f.kind == reflect.Int64 {
+			*(*int64)(ptr) = v
+			return true
+		}
+		if f.kind == reflect.Int {
+			*(*int)(ptr) = int(v)
+			return true
+		}
+	case float64:
+		if f.kind == reflect.Float64 {
+			*(*float64)(ptr) = v
+			return true
+		}
+		if f.kind == reflect.Float32 {
+			*(*float32)(ptr) = float32(v)
+			return true
+		}
+	case bool:
+		if f.kind == reflect.Bool {
+			*(*bool)(ptr) = v
+			return true
+		}
+	case time.Duration:
+		if f.kind == reflect.Int64 && f.isDuration {
+			*(*int64)(ptr) = int64(v)
+			return true
+		}
+	}
+
+	// Value doesn't directly match the field type, fall through to string-based parsing
+	return false
 }
 
 var importCache sync.Map
@@ -275,7 +394,25 @@ func (dec *NeoDecoder) evaluateExpressionWithToken(tok Token) (string, error) {
 		if !ok {
 			return "", fmt.Errorf("undefined variable: %s", BytesToString(varTok.Literal))
 		}
-		return val, nil
+		switch v := val.(type) {
+		case string:
+			return v, nil
+		case int:
+			return strconv.Itoa(v), nil
+		case int64:
+			return strconv.FormatInt(v, 10), nil
+		case float64:
+			return strconv.FormatFloat(v, 'f', -1, 64), nil
+		case bool:
+			if v {
+				return "true", nil
+			}
+			return "false", nil
+		case time.Duration:
+			return v.String(), nil
+		default:
+			return fmt.Sprint(val), nil
+		}
 	default:
 		return "", fmt.Errorf("unexpected token %v (%s) in expression", tok.Type, string(tok.Literal))
 	}
@@ -364,6 +501,11 @@ func (dec *NeoDecoder) decodeValue(f *neoField, ptr unsafe.Pointer) {
 			*(*int64)(ptr) = int64(dec.fastParseDuration(tok.Literal))
 			return
 		}
+	case DOLLAR_LBRACE:
+		if dec.trySetVariable(ptr, f) {
+			return
+		}
+		// Fall through to evaluated expression
 	}
 
 	val, err := dec.evaluateExpressionWithToken(tok)
