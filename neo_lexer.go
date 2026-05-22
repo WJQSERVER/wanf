@@ -266,6 +266,13 @@ func (l *NeoLexer) readRawStringFast(startLine, startCol int) Token {
 	return Token{Type: STRING, Literal: lit, Line: startLine, Column: startCol}
 }
 
+func (l *NeoLexer) peekNext() byte {
+	if l.pos+1 < l.read {
+		return l.input[l.pos+1]
+	}
+	return 0
+}
+
 func (l *NeoLexer) peek() byte {
 	if l.pos >= l.read {
 		if l.reader != nil {
@@ -401,9 +408,26 @@ func (l *NeoLexer) readNumberOrDuration() Token {
 	startLine, startCol := l.line, l.col
 	startPos := l.pos
 	l.litBuf = l.litBuf[:0]
+	isFloat := false
+
+	// Leading '-' is part of the number literal
+	if l.peek() == '-' {
+		ch := l.advance()
+		if l.isStreaming {
+			l.litBuf = append(l.litBuf, ch)
+		}
+	}
+
+	// Read the numeric part (digits + optional single dot)
 	for {
 		ch := l.peek()
-		if (ch >= '0' && ch <= '9') || ch == '.' || ch == '-' || (ch >= 'a' && ch <= 'z') || ch == 'µ' {
+		if ch >= '0' && ch <= '9' {
+			ch := l.advance()
+			if l.isStreaming {
+				l.litBuf = append(l.litBuf, ch)
+			}
+		} else if ch == '.' && !isFloat {
+			isFloat = true
 			ch := l.advance()
 			if l.isStreaming {
 				l.litBuf = append(l.litBuf, ch)
@@ -412,6 +436,48 @@ func (l *NeoLexer) readNumberOrDuration() Token {
 			break
 		}
 	}
+
+	// Check for duration suffix
+	ch := l.peek()
+	if isDurationUnit(ch, l.peekNext()) {
+		for {
+			// Read the unit
+			first := l.advance()
+			if l.isStreaming {
+				l.litBuf = append(l.litBuf, first)
+			}
+			// Handle two-char units: ms, us, ns
+			if (first == 'm' || first == 'u' || first == 'n') && l.peek() == 's' {
+				second := l.advance()
+				if l.isStreaming {
+					l.litBuf = append(l.litBuf, second)
+				}
+			}
+
+			// Check for compound duration (e.g., "1h30m")
+			if l.peek() >= '0' && l.peek() <= '9' {
+				for {
+					ch := l.peek()
+					if ch >= '0' && ch <= '9' {
+						ch := l.advance()
+						if l.isStreaming {
+							l.litBuf = append(l.litBuf, ch)
+						}
+					} else {
+						break
+					}
+				}
+			} else {
+				break
+			}
+		}
+		lit := l.getLiteral(startPos, l.pos)
+		return Token{Type: DUR, Literal: lit, Line: startLine, Column: startCol}
+	}
+
 	lit := l.getLiteral(startPos, l.pos)
+	if isFloat {
+		return Token{Type: FLOAT, Literal: lit, Line: startLine, Column: startCol}
+	}
 	return Token{Type: INT, Literal: lit, Line: startLine, Column: startCol}
 }
