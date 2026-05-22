@@ -311,6 +311,38 @@ func (dec *NeoDecoder) decodeValue(f *neoField, ptr unsafe.Pointer) {
 			}
 			return
 		}
+		if f.kind == reflect.Int8 {
+			*(*int8)(ptr) = int8(dec.fastParseInt(tok.Literal))
+			return
+		}
+		if f.kind == reflect.Int16 {
+			*(*int16)(ptr) = int16(dec.fastParseInt(tok.Literal))
+			return
+		}
+		if f.kind == reflect.Int32 {
+			*(*int32)(ptr) = int32(dec.fastParseInt(tok.Literal))
+			return
+		}
+		if f.kind == reflect.Uint {
+			*(*uint)(ptr) = uint(dec.fastParseInt(tok.Literal))
+			return
+		}
+		if f.kind == reflect.Uint8 {
+			*(*uint8)(ptr) = uint8(dec.fastParseInt(tok.Literal))
+			return
+		}
+		if f.kind == reflect.Uint16 {
+			*(*uint16)(ptr) = uint16(dec.fastParseInt(tok.Literal))
+			return
+		}
+		if f.kind == reflect.Uint32 {
+			*(*uint32)(ptr) = uint32(dec.fastParseInt(tok.Literal))
+			return
+		}
+		if f.kind == reflect.Uint64 {
+			*(*uint64)(ptr) = uint64(dec.fastParseInt(tok.Literal))
+			return
+		}
 	case BOOL:
 		if f.kind == reflect.Bool {
 			*(*bool)(ptr) = len(tok.Literal) == 4 // "true"
@@ -320,6 +352,11 @@ func (dec *NeoDecoder) decodeValue(f *neoField, ptr unsafe.Pointer) {
 		if f.kind == reflect.Float64 {
 			f64, _ := strconv.ParseFloat(BytesToString(tok.Literal), 64)
 			*(*float64)(ptr) = f64
+			return
+		}
+		if f.kind == reflect.Float32 {
+			f32, _ := strconv.ParseFloat(BytesToString(tok.Literal), 32)
+			*(*float32)(ptr) = float32(f32)
 			return
 		}
 	case DUR:
@@ -341,6 +378,15 @@ func (dec *NeoDecoder) decodeValue(f *neoField, ptr unsafe.Pointer) {
 	case reflect.Int:
 		i, _ := strconv.Atoi(val)
 		*(*int)(ptr) = i
+	case reflect.Int8:
+		i, _ := strconv.ParseInt(val, 10, 8)
+		*(*int8)(ptr) = int8(i)
+	case reflect.Int16:
+		i, _ := strconv.ParseInt(val, 10, 16)
+		*(*int16)(ptr) = int16(i)
+	case reflect.Int32:
+		i, _ := strconv.ParseInt(val, 10, 32)
+		*(*int32)(ptr) = int32(i)
 	case reflect.Int64:
 		if f.isDuration {
 			d, err := time.ParseDuration(val)
@@ -353,9 +399,27 @@ func (dec *NeoDecoder) decodeValue(f *neoField, ptr unsafe.Pointer) {
 			i64, _ := strconv.ParseInt(val, 10, 64)
 			*(*int64)(ptr) = i64
 		}
+	case reflect.Uint:
+		i, _ := strconv.ParseUint(val, 10, 64)
+		*(*uint)(ptr) = uint(i)
+	case reflect.Uint8:
+		i, _ := strconv.ParseUint(val, 10, 8)
+		*(*uint8)(ptr) = uint8(i)
+	case reflect.Uint16:
+		i, _ := strconv.ParseUint(val, 10, 16)
+		*(*uint16)(ptr) = uint16(i)
+	case reflect.Uint32:
+		i, _ := strconv.ParseUint(val, 10, 32)
+		*(*uint32)(ptr) = uint32(i)
+	case reflect.Uint64:
+		i, _ := strconv.ParseUint(val, 10, 64)
+		*(*uint64)(ptr) = i
 	case reflect.Float64:
 		f64, _ := strconv.ParseFloat(val, 64)
 		*(*float64)(ptr) = f64
+	case reflect.Float32:
+		f32, _ := strconv.ParseFloat(val, 32)
+		*(*float32)(ptr) = float32(f32)
 	case reflect.Bool:
 		if val == "true" {
 			*(*bool)(ptr) = true
