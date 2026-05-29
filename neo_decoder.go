@@ -15,7 +15,7 @@ import (
 type NeoDecoder struct {
 	l         *NeoLexer
 	err       error
-	variables map[string]string
+	variables map[string]any
 	basePath  string
 	imported  map[string]bool
 }
@@ -23,7 +23,7 @@ type NeoDecoder struct {
 var neoDecoderPool = sync.Pool{
 	New: func() any {
 		return &NeoDecoder{
-			variables: make(map[string]string),
+			variables: make(map[string]any),
 			basePath:  ".",
 			imported:  make(map[string]bool),
 		}
@@ -172,12 +172,174 @@ func (dec *NeoDecoder) handleVar() error {
 	if dec.l.nextToken().Type != ASSIGN {
 		return fmt.Errorf("expected '=' after variable name")
 	}
-	val, err := dec.evaluateExpression()
-	if err != nil {
-		return err
+
+	// Peek at the value token to preserve type
+	valTok := dec.l.nextToken()
+	name := BytesToString(nameTok.Literal)
+
+	switch valTok.Type {
+	case STRING:
+		dec.variables[name] = BytesToString(valTok.Literal)
+	case INT:
+		dec.variables[name] = int64(dec.fastParseInt(valTok.Literal))
+	case FLOAT:
+		f64, _ := strconv.ParseFloat(BytesToString(valTok.Literal), 64)
+		dec.variables[name] = f64
+	case BOOL:
+		dec.variables[name] = len(valTok.Literal) == 4 // "true"
+	case DUR:
+		dec.variables[name] = dec.fastParseDuration(valTok.Literal)
+	default:
+		// Complex expression like ${other_var}, env(), etc.
+		val, err := dec.evaluateExpressionWithToken(valTok)
+		if err != nil {
+			return err
+		}
+		dec.variables[name] = val
 	}
-	dec.variables[BytesToString(nameTok.Literal)] = val
+
 	return nil
+}
+
+// trySetDirect attempts to set the struct field directly from a typed value.
+// It returns true if the type matched and the field was set.
+func (dec *NeoDecoder) trySetDirect(ptr unsafe.Pointer, f *neoField, val any) bool {
+	switch v := val.(type) {
+	case string:
+		if f.kind == reflect.String {
+			*(*string)(ptr) = v
+			return true
+		}
+	case int:
+		if f.kind == reflect.Int {
+			*(*int)(ptr) = v
+			return true
+		}
+		if f.kind == reflect.Int64 {
+			*(*int64)(ptr) = int64(v)
+			return true
+		}
+		if f.kind == reflect.Int8 {
+			*(*int8)(ptr) = int8(v)
+			return true
+		}
+		if f.kind == reflect.Int16 {
+			*(*int16)(ptr) = int16(v)
+			return true
+		}
+		if f.kind == reflect.Int32 {
+			*(*int32)(ptr) = int32(v)
+			return true
+		}
+		if f.kind == reflect.Uint {
+			*(*uint)(ptr) = uint(v)
+			return true
+		}
+		if f.kind == reflect.Uint8 {
+			*(*uint8)(ptr) = uint8(v)
+			return true
+		}
+		if f.kind == reflect.Uint16 {
+			*(*uint16)(ptr) = uint16(v)
+			return true
+		}
+		if f.kind == reflect.Uint32 {
+			*(*uint32)(ptr) = uint32(v)
+			return true
+		}
+		if f.kind == reflect.Uint64 {
+			*(*uint64)(ptr) = uint64(v)
+			return true
+		}
+	case int64:
+		if f.kind == reflect.Int64 {
+			*(*int64)(ptr) = v
+			return true
+		}
+		if f.kind == reflect.Int {
+			*(*int)(ptr) = int(v)
+			return true
+		}
+	case float64:
+		if f.kind == reflect.Float64 {
+			*(*float64)(ptr) = v
+			return true
+		}
+		if f.kind == reflect.Float32 {
+			*(*float32)(ptr) = float32(v)
+			return true
+		}
+	case bool:
+		if f.kind == reflect.Bool {
+			*(*bool)(ptr) = v
+			return true
+		}
+	case time.Duration:
+		if f.kind == reflect.Int64 && f.isDuration {
+			*(*int64)(ptr) = int64(v)
+			return true
+		}
+	}
+	return false
+}
+
+// decodeStringValue parses a string value and sets it into the struct field.
+func (dec *NeoDecoder) decodeStringValue(ptr unsafe.Pointer, f *neoField, val string) {
+	switch f.kind {
+	case reflect.String:
+		*(*string)(ptr) = val
+	case reflect.Int:
+		i, _ := strconv.Atoi(val)
+		*(*int)(ptr) = i
+	case reflect.Int8:
+		i, _ := strconv.ParseInt(val, 10, 8)
+		*(*int8)(ptr) = int8(i)
+	case reflect.Int16:
+		i, _ := strconv.ParseInt(val, 10, 16)
+		*(*int16)(ptr) = int16(i)
+	case reflect.Int32:
+		i, _ := strconv.ParseInt(val, 10, 32)
+		*(*int32)(ptr) = int32(i)
+	case reflect.Int64:
+		if f.isDuration {
+			d, err := time.ParseDuration(val)
+			if err != nil {
+				i64, _ := strconv.ParseInt(val, 10, 64)
+				d = time.Duration(i64)
+			}
+			*(*int64)(ptr) = int64(d)
+		} else {
+			i64, _ := strconv.ParseInt(val, 10, 64)
+			*(*int64)(ptr) = i64
+		}
+	case reflect.Uint:
+		i, _ := strconv.ParseUint(val, 10, 64)
+		*(*uint)(ptr) = uint(i)
+	case reflect.Uint8:
+		i, _ := strconv.ParseUint(val, 10, 8)
+		*(*uint8)(ptr) = uint8(i)
+	case reflect.Uint16:
+		i, _ := strconv.ParseUint(val, 10, 16)
+		*(*uint16)(ptr) = uint16(i)
+	case reflect.Uint32:
+		i, _ := strconv.ParseUint(val, 10, 32)
+		*(*uint32)(ptr) = uint32(i)
+	case reflect.Uint64:
+		i, _ := strconv.ParseUint(val, 10, 64)
+		*(*uint64)(ptr) = i
+	case reflect.Float64:
+		f64, _ := strconv.ParseFloat(val, 64)
+		*(*float64)(ptr) = f64
+	case reflect.Float32:
+		f32, _ := strconv.ParseFloat(val, 32)
+		*(*float32)(ptr) = float32(f32)
+	case reflect.Bool:
+		if val == "true" {
+			*(*bool)(ptr) = true
+		} else {
+			*(*bool)(ptr) = false
+		}
+	}
 }
 
 var importCache sync.Map
@@ -275,7 +437,25 @@ func (dec *NeoDecoder) evaluateExpressionWithToken(tok Token) (string, error) {
 		if !ok {
 			return "", fmt.Errorf("undefined variable: %s", BytesToString(varTok.Literal))
 		}
-		return val, nil
+		switch v := val.(type) {
+		case string:
+			return v, nil
+		case int:
+			return strconv.Itoa(v), nil
+		case int64:
+			return strconv.FormatInt(v, 10), nil
+		case float64:
+			return strconv.FormatFloat(v, 'f', -1, 64), nil
+		case bool:
+			if v {
+				return "true", nil
+			}
+			return "false", nil
+		case time.Duration:
+			return v.String(), nil
+		default:
+			return fmt.Sprint(val), nil
+		}
 	default:
 		return "", fmt.Errorf("unexpected token %v (%s) in expression", tok.Type, string(tok.Literal))
 	}
@@ -311,6 +491,38 @@ func (dec *NeoDecoder) decodeValue(f *neoField, ptr unsafe.Pointer) {
 			}
 			return
 		}
+		if f.kind == reflect.Int8 {
+			*(*int8)(ptr) = int8(dec.fastParseInt(tok.Literal))
+			return
+		}
+		if f.kind == reflect.Int16 {
+			*(*int16)(ptr) = int16(dec.fastParseInt(tok.Literal))
+			return
+		}
+		if f.kind == reflect.Int32 {
+			*(*int32)(ptr) = int32(dec.fastParseInt(tok.Literal))
+			return
+		}
+		if f.kind == reflect.Uint {
+			*(*uint)(ptr) = uint(dec.fastParseInt(tok.Literal))
+			return
+		}
+		if f.kind == reflect.Uint8 {
+			*(*uint8)(ptr) = uint8(dec.fastParseInt(tok.Literal))
+			return
+		}
+		if f.kind == reflect.Uint16 {
+			*(*uint16)(ptr) = uint16(dec.fastParseInt(tok.Literal))
+			return
+		}
+		if f.kind == reflect.Uint32 {
+			*(*uint32)(ptr) = uint32(dec.fastParseInt(tok.Literal))
+			return
+		}
+		if f.kind == reflect.Uint64 {
+			*(*uint64)(ptr) = uint64(dec.fastParseInt(tok.Literal))
+			return
+		}
 	case BOOL:
 		if f.kind == reflect.Bool {
 			*(*bool)(ptr) = len(tok.Literal) == 4 // "true"
@@ -322,11 +534,57 @@ func (dec *NeoDecoder) decodeValue(f *neoField, ptr unsafe.Pointer) {
 			*(*float64)(ptr) = f64
 			return
 		}
+		if f.kind == reflect.Float32 {
+			f32, _ := strconv.ParseFloat(BytesToString(tok.Literal), 32)
+			*(*float32)(ptr) = float32(f32)
+			return
+		}
 	case DUR:
 		if f.kind == reflect.Int64 && f.isDuration {
 			*(*int64)(ptr) = int64(dec.fastParseDuration(tok.Literal))
 			return
 		}
+	case DOLLAR_LBRACE:
+		varTok := dec.l.nextToken()
+		if varTok.Type != IDENT {
+			dec.err = fmt.Errorf("expected identifier in ${}")
+			return
+		}
+		if dec.l.nextToken().Type != RBRACE {
+			dec.err = fmt.Errorf("expected '}' after variable name")
+			return
+		}
+		valAny, ok := dec.variables[BytesToString(varTok.Literal)]
+		if !ok {
+			dec.err = fmt.Errorf("undefined variable: %s", BytesToString(varTok.Literal))
+			return
+		}
+		if dec.trySetDirect(ptr, f, valAny) {
+			return
+		}
+		var valStr string
+		switch v := valAny.(type) {
+		case string:
+			valStr = v
+		case int:
+			valStr = strconv.Itoa(v)
+		case int64:
+			valStr = strconv.FormatInt(v, 10)
+		case float64:
+			valStr = strconv.FormatFloat(v, 'f', -1, 64)
+		case bool:
+			if v {
+				valStr = "true"
+			} else {
+				valStr = "false"
+			}
+		case time.Duration:
+			valStr = v.String()
+		default:
+			valStr = fmt.Sprint(valAny)
+		}
+		dec.decodeStringValue(ptr, f, valStr)
+		return
 	}
 
 	val, err := dec.evaluateExpressionWithToken(tok)
@@ -334,35 +592,7 @@ func (dec *NeoDecoder) decodeValue(f *neoField, ptr unsafe.Pointer) {
 		dec.err = err
 		return
 	}
-
-	switch f.kind {
-	case reflect.String:
-		*(*string)(ptr) = val
-	case reflect.Int:
-		i, _ := strconv.Atoi(val)
-		*(*int)(ptr) = i
-	case reflect.Int64:
-		if f.isDuration {
-			d, err := time.ParseDuration(val)
-			if err != nil {
-				i64, _ := strconv.ParseInt(val, 10, 64)
-				d = time.Duration(i64)
-			}
-			*(*int64)(ptr) = int64(d)
-		} else {
-			i64, _ := strconv.ParseInt(val, 10, 64)
-			*(*int64)(ptr) = i64
-		}
-	case reflect.Float64:
-		f64, _ := strconv.ParseFloat(val, 64)
-		*(*float64)(ptr) = f64
-	case reflect.Bool:
-		if val == "true" {
-			*(*bool)(ptr) = true
-		} else {
-			*(*bool)(ptr) = false
-		}
-	}
+	dec.decodeStringValue(ptr, f, val)
 }
 
 func (dec *NeoDecoder) fastParseInt(b []byte) int {
@@ -406,6 +636,18 @@ func (dec *NeoDecoder) decodeSlice(f *neoField, ptr unsafe.Pointer) {
 	}
 	if f.elemType == reflect.TypeOf([]int{}) {
 		dec.decodeIntSlice(ptr)
+		return
+	}
+	if f.elemType == reflect.TypeOf([]float64{}) {
+		dec.decodeFloat64Slice(ptr)
+		return
+	}
+	if f.elemType == reflect.TypeOf([]int64{}) {
+		dec.decodeInt64Slice(ptr)
+		return
+	}
+	if f.elemType == reflect.TypeOf([]bool{}) {
+		dec.decodeBoolSlice(ptr)
 		return
 	}
 
@@ -515,6 +757,93 @@ func (dec *NeoDecoder) decodeIntSlice(ptr unsafe.Pointer) {
 	}
 }
 
+func (dec *NeoDecoder) decodeInt64Slice(ptr unsafe.Pointer) {
+	s := (*[]int64)(ptr)
+	if *s == nil {
+		*s = make([]int64, 0, 8)
+	} else {
+		*s = (*s)[:0]
+	}
+
+	for {
+		if dec.l.skipWhitespaceAndPeek() == ']' {
+			dec.l.advance()
+			break
+		}
+
+		tok := dec.l.nextToken()
+		if tok.Type == INT {
+			*s = append(*s, int64(dec.fastParseInt(tok.Literal)))
+		} else {
+			val, _ := dec.evaluateExpressionWithToken(tok)
+			i, _ := strconv.ParseInt(val, 10, 64)
+			*s = append(*s, i)
+		}
+
+		if dec.l.skipWhitespaceAndPeek() == ',' {
+			dec.l.advance()
+		}
+	}
+}
+
+func (dec *NeoDecoder) decodeFloat64Slice(ptr unsafe.Pointer) {
+	s := (*[]float64)(ptr)
+	if *s == nil {
+		*s = make([]float64, 0, 8)
+	} else {
+		*s = (*s)[:0]
+	}
+
+	for {
+		if dec.l.skipWhitespaceAndPeek() == ']' {
+			dec.l.advance()
+			break
+		}
+
+		tok := dec.l.nextToken()
+		if tok.Type == FLOAT || tok.Type == INT {
+			f64, _ := strconv.ParseFloat(BytesToString(tok.Literal), 64)
+			*s = append(*s, f64)
+		} else {
+			val, _ := dec.evaluateExpressionWithToken(tok)
+			f64, _ := strconv.ParseFloat(val, 64)
+			*s = append(*s, f64)
+		}
+
+		if dec.l.skipWhitespaceAndPeek() == ',' {
+			dec.l.advance()
+		}
+	}
+}
+
+func (dec *NeoDecoder) decodeBoolSlice(ptr unsafe.Pointer) {
+	s := (*[]bool)(ptr)
+	if *s == nil {
+		*s = make([]bool, 0, 8)
+	} else {
+		*s = (*s)[:0]
+	}
+
+	for {
+		if dec.l.skipWhitespaceAndPeek() == ']' {
+			dec.l.advance()
+			break
+		}
+
+		tok := dec.l.nextToken()
+		if tok.Type == BOOL {
+			*s = append(*s, len(tok.Literal) == 4) // "true"
+		} else {
+			val, _ := dec.evaluateExpressionWithToken(tok)
+			*s = append(*s, val == "true")
+		}
+
+		if dec.l.skipWhitespaceAndPeek() == ',' {
+			dec.l.advance()
+		}
+	}
+}
+
 func (dec *NeoDecoder) decodeMap(f *neoField, ptr unsafe.Pointer, alreadyConsumed bool) {
 	if !alreadyConsumed {
 		tok := dec.l.nextToken()
@@ -536,8 +865,12 @@ func (dec *NeoDecoder) decodeMap(f *neoField, ptr unsafe.Pointer, alreadyConsume
 		rv.Set(reflect.MakeMap(f.elemType))
 	}
 
-	if valType.Kind() == reflect.String && f.elemType.Key().Kind() == reflect.String {
+	if f.elemType == mapStringStringType {
 		dec.decodeMapStringString(rv, hasBracket)
+		return
+	}
+	if f.elemType == mapStringAnyType {
+		dec.decodeMapStringAny(rv, hasBracket)
 		return
 	}
 
@@ -640,6 +973,76 @@ func (dec *NeoDecoder) decodeMapStringString(rv reflect.Value, hasBracket bool) 
 		}
 
 		rv.SetMapIndex(reflect.ValueOf(keyStr), reflect.ValueOf(valStr))
+
+		if dec.l.skipWhitespaceAndPeek() == ',' || dec.l.skipWhitespaceAndPeek() == ';' {
+			dec.l.advance()
+		}
+	}
+}
+
+func (dec *NeoDecoder) decodeMapStringAny(rv reflect.Value, hasBracket bool) {
+	for {
+		ch := dec.l.skipWhitespaceAndPeek()
+		if (hasBracket && ch == ']') || (!hasBracket && ch == '}') {
+			dec.l.advance()
+			if hasBracket {
+				if dec.l.skipWhitespaceAndPeek() == '}' {
+					dec.l.advance()
+				}
+			}
+			break
+		}
+		if ch == 0 {
+			break
+		}
+
+		tok := dec.l.nextToken()
+		if tok.Type != IDENT && tok.Type != STRING {
+			dec.err = fmt.Errorf("expected key in map")
+			return
+		}
+		keyStr := BytesToString(tok.Literal)
+
+		assignTok := dec.l.nextToken()
+		if assignTok.Type != ASSIGN && assignTok.Type != COLON {
+			dec.err = fmt.Errorf("expected '=' or ':' in map")
+			return
+		}
+
+		valTok := dec.l.nextToken()
+		var val any
+		switch valTok.Type {
+		case STRING:
+			val = BytesToString(valTok.Literal)
+		case INT:
+			val = int64(dec.fastParseInt(valTok.Literal))
+		case FLOAT:
+			f64, _ := strconv.ParseFloat(BytesToString(valTok.Literal), 64)
+			val = f64
+		case BOOL:
+			val = len(valTok.Literal) == 4
+		case DUR:
+			val = dec.fastParseDuration(valTok.Literal)
+		case DOLLAR_LBRACE:
+			varTok := dec.l.nextToken()
+			if varTok.Type == IDENT && dec.l.nextToken().Type == RBRACE {
+				if v, ok := dec.variables[BytesToString(varTok.Literal)]; ok {
+					val = v
+				}
+			}
+			if val == nil {
+				val = ""
+			}
+		default:
+			exprVal, err := dec.evaluateExpressionWithToken(valTok)
+			if err == nil {
+				val = exprVal
+			} else {
+				val = ""
+			}
+		}
+
+		rv.SetMapIndex(reflect.ValueOf(keyStr), reflect.ValueOf(val))
 
 		if dec.l.skipWhitespaceAndPeek() == ',' || dec.l.skipWhitespaceAndPeek() == ';' {
 			dec.l.advance()

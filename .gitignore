@@ -37,3 +37,6 @@ out/
 dist/
 
 *.vsix
+
+# Benchmark data
+bench/
