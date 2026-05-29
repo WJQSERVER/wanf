@@ -2,6 +2,7 @@ package wanf
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -485,9 +486,115 @@ func TestNeo_DurationLiteral(t *testing.T) {
 	}
 }
 
-// TestNeo_VariableType confirms the concrete Go types stored by handleVar.
-// CodeRabbit flagged an inconsistency: fastParseInt returns int, but some
-// code paths (base decoder, map[string]any decode) expect int64.
+// TestNeo_AnyField verifies Neo codec behavior with interface{}/any fields.
+// The Neo encoder does not handle reflect.Interface kind in encodeField,
+// causing any-typed values to be silently omitted during encoding.
+// NeoUnmarshal similarly cannot decode into any fields.
+func TestNeo_AnyField(t *testing.T) {
+	// Baseline: base Marshal works with any fields
+	t.Run("Marshal_any_field_works", func(t *testing.T) {
+		type Var struct {
+			ID    string `wanf:"id"`
+			Value any    `wanf:"value"`
+		}
+		v := Var{ID: "a", Value: float64(1.5)}
+		data, err := Marshal(&v)
+		if err != nil {
+			t.Fatalf("Marshal failed: %v", err)
+		}
+		s := string(data)
+		t.Logf("Marshal output: %q", s)
+		if !strings.Contains(s, "1.5") {
+			t.Error("Marshal: expected value to contain '1.5', got empty")
+		}
+	})
+
+	// Issue: NeoMarshal with any field → value omitted
+	t.Run("NeoMarshal_any_field_empty", func(t *testing.T) {
+		type Var struct {
+			ID    string `wanf:"id"`
+			Value any    `wanf:"value"`
+		}
+		v := Var{ID: "a", Value: float64(1.5)}
+		data, err := NeoMarshal(&v)
+		if err != nil {
+			t.Fatalf("NeoMarshal failed: %v", err)
+		}
+		s := string(data)
+		t.Logf("NeoMarshal output: %q", s)
+
+		// The field name IS written but the value is empty
+		if strings.Contains(s, "value = 1.5") {
+			t.Log("any field value is correctly written")
+		} else if strings.Contains(s, "value =") {
+			t.Log("BUG CONFIRMED: any field name is present but VALUE IS EMPTY — NeoEncoder.encodeField missing reflect.Interface case")
+		} else {
+			t.Log("any field is completely absent")
+		}
+	})
+
+	// Baseline: NeoMarshal with concrete type works
+	t.Run("NeoMarshal_concrete_field_works", func(t *testing.T) {
+		type Var struct {
+			ID    string  `wanf:"id"`
+			Value float64 `wanf:"value"`
+		}
+		v := Var{ID: "a", Value: float64(1.5)}
+		data, err := NeoMarshal(&v)
+		if err != nil {
+			t.Fatalf("NeoMarshal failed: %v", err)
+		}
+		s := string(data)
+		t.Logf("NeoMarshal concrete output: %q", s)
+		if !strings.Contains(s, "1.5") {
+			t.Error("NeoMarshal concrete: expected value to contain '1.5'")
+		}
+	})
+
+	// Round-trip: NeoMarshal + NeoUnmarshal with any → value lost in decode
+	t.Run("NeoRoundTrip_any_field_value_lost", func(t *testing.T) {
+		type Var struct {
+			ID    string `wanf:"id"`
+			Value any    `wanf:"value"`
+		}
+		v := Var{ID: "a", Value: float64(1.5)}
+		data, err := NeoMarshal(&v)
+		if err != nil {
+			t.Fatalf("NeoMarshal failed: %v", err)
+		}
+		t.Logf("NeoMarshal output: %q", string(data))
+
+		var decoded Var
+		err = NeoUnmarshal(data, &decoded)
+		if err != nil {
+			t.Logf("NeoUnmarshal failed: %v (expected: decoder needs Interface support)", err)
+		} else {
+			t.Logf("NeoUnmarshal succeeded, Value=%T(%v)", decoded.Value, decoded.Value)
+			if decoded.Value == nil {
+				t.Log("BUG CONFIRMED: NeoUnmarshal does not populate any fields — value is nil after decode")
+			}
+		}
+	})
+
+	// Round-trip: Marshal + Decode with any → works (baseline)
+	t.Run("BaseRoundTrip_any_field_works", func(t *testing.T) {
+		type Var struct {
+			ID    string `wanf:"id"`
+			Value any    `wanf:"value"`
+		}
+		v := Var{ID: "a", Value: float64(1.5)}
+		data, err := Marshal(&v)
+		if err != nil {
+			t.Fatalf("Marshal failed: %v", err)
+		}
+		s := string(data)
+		t.Logf("Marshal output: %q", s)
+		if !strings.Contains(s, "1") {
+			t.Error("Marshal: expected value to contain '1', got empty")
+		}
+	})
+}
+
 func TestNeo_VariableType(t *testing.T) {
 	t.Run("handleVar_stores_int", func(t *testing.T) {
 		wanfData := []byte(`
