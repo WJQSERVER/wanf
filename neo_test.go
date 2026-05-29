@@ -94,6 +94,152 @@ func TestNeo_OmitEmpty(t *testing.T) {
 	}
 }
 
+func TestNeo_OmitEmpty_Bool(t *testing.T) {
+	type Config struct {
+		Active   bool `wanf:"active,omitempty"`
+		Inactive bool `wanf:"inactive,omitempty"`
+	}
+
+	// Encode: both zero (false) → omit both
+	cfg1 := Config{Active: false, Inactive: false}
+	data, err := NeoMarshal(&cfg1)
+	if err != nil {
+		t.Fatalf("NeoMarshal failed: %v", err)
+	}
+	if string(data) != "" {
+		t.Errorf("false+false: expected empty, got %q", string(data))
+	}
+
+	// Encode: one true, one false → only true field
+	cfg2 := Config{Active: true, Inactive: false}
+	data, err = NeoMarshal(&cfg2)
+	if err != nil {
+		t.Fatalf("NeoMarshal failed: %v", err)
+	}
+	if string(data) != "active = true" {
+		t.Errorf("true+false: expected 'active = true', got %q", string(data))
+	}
+
+	// Encode: both true
+	cfg3 := Config{Active: true, Inactive: true}
+	data, err = NeoMarshal(&cfg3)
+	if err != nil {
+		t.Fatalf("NeoMarshal failed: %v", err)
+	}
+	if string(data) != "active = true\ninactive = true" {
+		t.Errorf("true+true: unexpected output: %q", string(data))
+	}
+
+	// Round-trip: false values survive (explicit input)
+	wanfData := []byte("active = false")
+	var decoded Config
+	err = NeoUnmarshal(wanfData, &decoded)
+	if err != nil {
+		t.Fatalf("NeoUnmarshal failed: %v", err)
+	}
+	if decoded.Active != false || decoded.Inactive != false {
+		t.Errorf("Decode explicit false failed. Got active=%v, inactive=%v",
+			decoded.Active, decoded.Inactive)
+	}
+
+	// Round-trip: omitempty fields absent → zero value
+	var decoded2 Config
+	err = NeoUnmarshal([]byte("active = true"), &decoded2)
+	if err != nil {
+		t.Fatalf("NeoUnmarshal failed: %v", err)
+	}
+	if decoded2.Active != true || decoded2.Inactive != false {
+		t.Errorf("Decode expected active=true, inactive=false. Got active=%v, inactive=%v",
+			decoded2.Active, decoded2.Inactive)
+	}
+}
+
+func TestNeo_OmitEmpty_PointerBool(t *testing.T) {
+	type Config struct {
+		Flag *bool `wanf:"flag,omitempty"`
+	}
+
+	// Encode: nil pointer → omitted
+	cfg1 := Config{Flag: nil}
+	data, err := NeoMarshal(&cfg1)
+	if err != nil {
+		t.Fatalf("NeoMarshal failed: %v", err)
+	}
+	if string(data) != "" {
+		t.Errorf("nil pointer: expected empty, got %q", string(data))
+	}
+
+	// Encode: &false → zero value, should be omitted
+	f := false
+	cfg2 := Config{Flag: &f}
+	data, err = NeoMarshal(&cfg2)
+	if err != nil {
+		t.Fatalf("NeoMarshal failed: %v", err)
+	}
+	if string(data) != "" {
+		t.Errorf("&false: expected empty (zero value), got %q", string(data))
+	}
+
+	// Encode: &true → present
+	tVal := true
+	cfg3 := Config{Flag: &tVal}
+	data, err = NeoMarshal(&cfg3)
+	if err != nil {
+		t.Fatalf("NeoMarshal failed: %v", err)
+	}
+	if string(data) != "flag = true" {
+		t.Errorf("&true: expected 'flag = true', got %q", string(data))
+	}
+
+	// Round-trip: explicit false ≠ absent
+	wanfData := []byte("flag = false")
+	var decoded Config
+	err = NeoUnmarshal(wanfData, &decoded)
+	if err != nil {
+		t.Fatalf("NeoUnmarshal failed: %v", err)
+	}
+	if decoded.Flag == nil {
+		t.Error("flag = false: expected non-nil pointer")
+	} else if *decoded.Flag != false {
+		t.Errorf("flag = false: expected false, got %v", *decoded.Flag)
+	}
+
+	// Round-trip: absent field → nil
+	var decoded2 Config
+	err = NeoUnmarshal([]byte("flag = true"), &decoded2)
+	if err != nil {
+		t.Fatalf("NeoUnmarshal failed: %v", err)
+	}
+	if decoded2.Flag == nil || *decoded2.Flag != true {
+		t.Errorf("Expected flag=true, got %v", decoded2.Flag)
+	}
+}
+
+func TestNeo_OmitEmpty_Decode_Compat(t *testing.T) {
+	// Ensure encoding false+omitempty is indistinguishable from
+	// the field being absent during later decode
+	type Config struct {
+		Active bool `wanf:"active,omitempty"`
+	}
+
+	// Encode false (omitted) → output empty
+	cfg := Config{Active: false}
+	data, _ := NeoMarshal(&cfg)
+	if string(data) != "" {
+		t.Fatalf("Expected empty, got %q", data)
+	}
+
+	// Decode the empty output → false (zero value)
+	var decoded Config
+	err := NeoUnmarshal(data, &decoded)
+	if err != nil {
+		t.Fatalf("NeoUnmarshal failed: %v", err)
+	}
+	if decoded.Active != false {
+		t.Errorf("Decode of omitted bool: expected false, got %v", decoded.Active)
+	}
+}
+
 func TestNeo_PointerFields(t *testing.T) {
 	type Config struct {
 		Name *string `wanf:"name"`
