@@ -288,6 +288,8 @@ func (dec *NeoDecoder) decodeStringValue(ptr unsafe.Pointer, f *neoField, val st
 	switch f.kind {
 	case reflect.String:
 		*(*string)(ptr) = val
+	case reflect.Interface:
+		*(*any)(ptr) = val
 	case reflect.Int:
 		i, _ := strconv.Atoi(val)
 		*(*int)(ptr) = i
@@ -478,6 +480,10 @@ func (dec *NeoDecoder) decodeValue(f *neoField, ptr unsafe.Pointer) {
 			*(*string)(ptr) = BytesToString(tok.Literal)
 			return
 		}
+		if f.kind == reflect.Interface {
+			*(*any)(ptr) = BytesToString(tok.Literal)
+			return
+		}
 	case INT:
 		if f.kind == reflect.Int {
 			*(*int)(ptr) = dec.fastParseInt(tok.Literal)
@@ -523,9 +529,17 @@ func (dec *NeoDecoder) decodeValue(f *neoField, ptr unsafe.Pointer) {
 			*(*uint64)(ptr) = uint64(dec.fastParseInt(tok.Literal))
 			return
 		}
+		if f.kind == reflect.Interface {
+			*(*any)(ptr) = int64(dec.fastParseInt(tok.Literal))
+			return
+		}
 	case BOOL:
 		if f.kind == reflect.Bool {
 			*(*bool)(ptr) = len(tok.Literal) == 4 // "true"
+			return
+		}
+		if f.kind == reflect.Interface {
+			*(*any)(ptr) = len(tok.Literal) == 4
 			return
 		}
 	case FLOAT:
@@ -539,9 +553,18 @@ func (dec *NeoDecoder) decodeValue(f *neoField, ptr unsafe.Pointer) {
 			*(*float32)(ptr) = float32(f32)
 			return
 		}
+		if f.kind == reflect.Interface {
+			f64, _ := strconv.ParseFloat(BytesToString(tok.Literal), 64)
+			*(*any)(ptr) = f64
+			return
+		}
 	case DUR:
 		if f.kind == reflect.Int64 && f.isDuration {
 			*(*int64)(ptr) = int64(dec.fastParseDuration(tok.Literal))
+			return
+		}
+		if f.kind == reflect.Interface {
+			*(*any)(ptr) = dec.fastParseDuration(tok.Literal)
 			return
 		}
 	case DOLLAR_LBRACE:
@@ -560,6 +583,10 @@ func (dec *NeoDecoder) decodeValue(f *neoField, ptr unsafe.Pointer) {
 			return
 		}
 		if dec.trySetDirect(ptr, f, valAny) {
+			return
+		}
+		if f.kind == reflect.Interface {
+			*(*any)(ptr) = valAny
 			return
 		}
 		var valStr string

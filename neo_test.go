@@ -567,12 +567,14 @@ func TestNeo_AnyField(t *testing.T) {
 		var decoded Var
 		err = NeoUnmarshal(data, &decoded)
 		if err != nil {
-			t.Logf("NeoUnmarshal failed: %v (expected: decoder needs Interface support)", err)
+			t.Fatalf("NeoUnmarshal failed: %v", err)
+		}
+		if decoded.Value == nil {
+			t.Error("NeoUnmarshal: any field value is nil after decode")
+		} else if decoded.Value.(float64) != 1.5 {
+			t.Errorf("NeoUnmarshal: got %T(%v), want float64(1.5)", decoded.Value, decoded.Value)
 		} else {
-			t.Logf("NeoUnmarshal succeeded, Value=%T(%v)", decoded.Value, decoded.Value)
-			if decoded.Value == nil {
-				t.Log("BUG CONFIRMED: NeoUnmarshal does not populate any fields — value is nil after decode")
-			}
+			t.Logf("NeoUnmarshal round-trip OK: Value=%T(%v)", decoded.Value, decoded.Value)
 		}
 	})
 
