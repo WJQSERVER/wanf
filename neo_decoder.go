@@ -201,23 +201,9 @@ func (dec *NeoDecoder) handleVar() error {
 	return nil
 }
 
-// trySetVariable looks up the variable name from the consumed DOLLAR_LBRACE token
-// and tries to set the field directly with the typed value.
-// It returns true if the variable was found and set, false if it should fall through.
-func (dec *NeoDecoder) trySetVariable(ptr unsafe.Pointer, f *neoField) bool {
-	varTok := dec.l.nextToken()
-	if varTok.Type != IDENT {
-		return false
-	}
-	if dec.l.nextToken().Type != RBRACE {
-		return false
-	}
-
-	val, ok := dec.variables[BytesToString(varTok.Literal)]
-	if !ok {
-		return false
-	}
-
+// trySetDirect attempts to set the struct field directly from a typed value.
+// It returns true if the type matched and the field was set.
+func (dec *NeoDecoder) trySetDirect(ptr unsafe.Pointer, f *neoField, val any) bool {
 	switch v := val.(type) {
 	case string:
 		if f.kind == reflect.String {
@@ -294,9 +280,66 @@ func (dec *NeoDecoder) trySetVariable(ptr unsafe.Pointer, f *neoField) bool {
 			return true
 		}
 	}
-
-	// Value doesn't directly match the field type, fall through to string-based parsing
 	return false
+}
+
+// decodeStringValue parses a string value and sets it into the struct field.
+func (dec *NeoDecoder) decodeStringValue(ptr unsafe.Pointer, f *neoField, val string) {
+	switch f.kind {
+	case reflect.String:
+		*(*string)(ptr) = val
+	case reflect.Int:
+		i, _ := strconv.Atoi(val)
+		*(*int)(ptr) = i
+	case reflect.Int8:
+		i, _ := strconv.ParseInt(val, 10, 8)
+		*(*int8)(ptr) = int8(i)
+	case reflect.Int16:
+		i, _ := strconv.ParseInt(val, 10, 16)
+		*(*int16)(ptr) = int16(i)
+	case reflect.Int32:
+		i, _ := strconv.ParseInt(val, 10, 32)
+		*(*int32)(ptr) = int32(i)
+	case reflect.Int64:
+		if f.isDuration {
+			d, err := time.ParseDuration(val)
+			if err != nil {
+				i64, _ := strconv.ParseInt(val, 10, 64)
+				d = time.Duration(i64)
+			}
+			*(*int64)(ptr) = int64(d)
+		} else {
+			i64, _ := strconv.ParseInt(val, 10, 64)
+			*(*int64)(ptr) = i64
+		}
+	case reflect.Uint:
+		i, _ := strconv.ParseUint(val, 10, 64)
+		*(*uint)(ptr) = uint(i)
+	case reflect.Uint8:
+		i, _ := strconv.ParseUint(val, 10, 8)
+		*(*uint8)(ptr) = uint8(i)
+	case reflect.Uint16:
+		i, _ := strconv.ParseUint(val, 10, 16)
+		*(*uint16)(ptr) = uint16(i)
+	case reflect.Uint32:
+		i, _ := strconv.ParseUint(val, 10, 32)
+		*(*uint32)(ptr) = uint32(i)
+	case reflect.Uint64:
+		i, _ := strconv.ParseUint(val, 10, 64)
+		*(*uint64)(ptr) = i
+	case reflect.Float64:
+		f64, _ := strconv.ParseFloat(val, 64)
+		*(*float64)(ptr) = f64
+	case reflect.Float32:
+		f32, _ := strconv.ParseFloat(val, 32)
+		*(*float32)(ptr) = float32(f32)
+	case reflect.Bool:
+		if val == "true" {
+			*(*bool)(ptr) = true
+		} else {
+			*(*bool)(ptr) = false
+		}
+	}
 }
 
 var importCache sync.Map
@@ -502,10 +545,46 @@ func (dec *NeoDecoder) decodeValue(f *neoField, ptr unsafe.Pointer) {
 			return
 		}
 	case DOLLAR_LBRACE:
-		if dec.trySetVariable(ptr, f) {
+		varTok := dec.l.nextToken()
+		if varTok.Type != IDENT {
+			dec.err = fmt.Errorf("expected identifier in ${}")
 			return
 		}
-		// Fall through to evaluated expression
+		if dec.l.nextToken().Type != RBRACE {
+			dec.err = fmt.Errorf("expected '}' after variable name")
+			return
+		}
+		valAny, ok := dec.variables[BytesToString(varTok.Literal)]
+		if !ok {
+			dec.err = fmt.Errorf("undefined variable: %s", BytesToString(varTok.Literal))
+			return
+		}
+		if dec.trySetDirect(ptr, f, valAny) {
+			return
+		}
+		var valStr string
+		switch v := valAny.(type) {
+		case string:
+			valStr = v
+		case int:
+			valStr = strconv.Itoa(v)
+		case int64:
+			valStr = strconv.FormatInt(v, 10)
+		case float64:
+			valStr = strconv.FormatFloat(v, 'f', -1, 64)
+		case bool:
+			if v {
+				valStr = "true"
+			} else {
+				valStr = "false"
+			}
+		case time.Duration:
+			valStr = v.String()
+		default:
+			valStr = fmt.Sprint(valAny)
+		}
+		dec.decodeStringValue(ptr, f, valStr)
+		return
 	}
 
 	val, err := dec.evaluateExpressionWithToken(tok)
@@ -513,62 +592,7 @@ func (dec *NeoDecoder) decodeValue(f *neoField, ptr unsafe.Pointer) {
 		dec.err = err
 		return
 	}
-
-	switch f.kind {
-	case reflect.String:
-		*(*string)(ptr) = val
-	case reflect.Int:
-		i, _ := strconv.Atoi(val)
-		*(*int)(ptr) = i
-	case reflect.Int8:
-		i, _ := strconv.ParseInt(val, 10, 8)
-		*(*int8)(ptr) = int8(i)
-	case reflect.Int16:
-		i, _ := strconv.ParseInt(val, 10, 16)
-		*(*int16)(ptr) = int16(i)
-	case reflect.Int32:
-		i, _ := strconv.ParseInt(val, 10, 32)
-		*(*int32)(ptr) = int32(i)
-	case reflect.Int64:
-		if f.isDuration {
-			d, err := time.ParseDuration(val)
-			if err != nil {
-				i64, _ := strconv.ParseInt(val, 10, 64)
-				d = time.Duration(i64)
-			}
-			*(*int64)(ptr) = int64(d)
-		} else {
-			i64, _ := strconv.ParseInt(val, 10, 64)
-			*(*int64)(ptr) = i64
-		}
-	case reflect.Uint:
-		i, _ := strconv.ParseUint(val, 10, 64)
-		*(*uint)(ptr) = uint(i)
-	case reflect.Uint8:
-		i, _ := strconv.ParseUint(val, 10, 8)
-		*(*uint8)(ptr) = uint8(i)
-	case reflect.Uint16:
-		i, _ := strconv.ParseUint(val, 10, 16)
-		*(*uint16)(ptr) = uint16(i)
-	case reflect.Uint32:
-		i, _ := strconv.ParseUint(val, 10, 32)
-		*(*uint32)(ptr) = uint32(i)
-	case reflect.Uint64:
-		i, _ := strconv.ParseUint(val, 10, 64)
-		*(*uint64)(ptr) = i
-	case reflect.Float64:
-		f64, _ := strconv.ParseFloat(val, 64)
-		*(*float64)(ptr) = f64
-	case reflect.Float32:
-		f32, _ := strconv.ParseFloat(val, 32)
-		*(*float32)(ptr) = float32(f32)
-	case reflect.Bool:
-		if val == "true" {
-			*(*bool)(ptr) = true
-		} else {
-			*(*bool)(ptr) = false
-		}
-	}
+	dec.decodeStringValue(ptr, f, val)
 }
 
 func (dec *NeoDecoder) fastParseInt(b []byte) int {
