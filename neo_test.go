@@ -341,6 +341,80 @@ func TestNeo_Duration(t *testing.T) {
 	}
 }
 
+func TestNeo_DurationMicroseconds(t *testing.T) {
+	type Config struct {
+		Val time.Duration `wanf:"val"`
+	}
+
+	tests := []struct {
+		literal string
+		want    time.Duration
+	}{
+		{"10µs", 10 * time.Microsecond},
+		{"10us", 10 * time.Microsecond},
+		{"100µs", 100 * time.Microsecond},
+		{"500ns", 500 * time.Nanosecond},
+		{"1ms30µs", 1*time.Millisecond + 30*time.Microsecond},
+	}
+
+	for _, tt := range tests {
+		t.Run("NeoDecode_"+tt.literal, func(t *testing.T) {
+			wanfData := []byte("val = " + tt.literal)
+			var cfg Config
+			err := NeoUnmarshal(wanfData, &cfg)
+			if err != nil {
+				t.Fatalf("NeoUnmarshal(%q) failed: %v", tt.literal, err)
+			}
+			if cfg.Val != tt.want {
+				t.Errorf("NeoUnmarshal(%q): got %v, want %v", tt.literal, cfg.Val, tt.want)
+			}
+		})
+
+		t.Run("NeoRoundTrip_"+tt.literal, func(t *testing.T) {
+			cfg := Config{Val: tt.want}
+			data, err := NeoMarshal(&cfg)
+			if err != nil {
+				t.Fatalf("NeoMarshal failed: %v", err)
+			}
+			var decoded Config
+			err = NeoUnmarshal(data, &decoded)
+			if err != nil {
+				t.Fatalf("NeoUnmarshal after marshal failed: %v", err)
+			}
+			if decoded.Val != cfg.Val {
+				t.Errorf("Round-trip %q: got %v, want %v", tt.literal, decoded.Val, cfg.Val)
+			}
+		})
+	}
+}
+
+func TestNeo_DurationMicroseconds_NeoLexer(t *testing.T) {
+	tests := []struct {
+		input           string
+		expectedLiteral string
+	}{
+		{"10µs", "10µs"},
+		{"10us", "10us"},
+		{"1ms30µs", "1ms30µs"},
+	}
+
+	for _, tt := range tests {
+		t.Run("NeoLexer_"+tt.input, func(t *testing.T) {
+			l := NewNeoLexer(nil)
+			l.SetInput([]byte(tt.input))
+			tok := l.nextToken()
+			l.Close()
+
+			if tok.Type != DUR {
+				t.Errorf("expected DUR type, got %v", tok.Type)
+			}
+			if string(tok.Literal) != tt.expectedLiteral {
+				t.Errorf("literal: got %q, want %q", string(tok.Literal), tt.expectedLiteral)
+			}
+		})
+	}
+}
+
 func TestNeo_Slice(t *testing.T) {
 	type Config struct {
 		Nums []int `wanf:"nums"`

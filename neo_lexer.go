@@ -446,11 +446,23 @@ func (l *NeoLexer) readNumberOrDuration() Token {
 			if l.isStreaming {
 				l.litBuf = append(l.litBuf, first)
 			}
-			// Handle two-char units: ms, us, ns
+			// Handle two-char units: ms, us, ns, µs
 			if (first == 'm' || first == 'u' || first == 'n') && l.peek() == 's' {
 				second := l.advance()
 				if l.isStreaming {
 					l.litBuf = append(l.litBuf, second)
+				}
+			}
+			if first == 0xC2 && l.peek() == 0xB5 {
+				second := l.advance()
+				if l.isStreaming {
+					l.litBuf = append(l.litBuf, second)
+				}
+				if l.peek() == 's' {
+					s := l.advance()
+					if l.isStreaming {
+						l.litBuf = append(l.litBuf, s)
+					}
 				}
 			}
 
