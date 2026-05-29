@@ -61,7 +61,9 @@ func (enc *NeoEncoder) Encode(v any) error {
 	}
 
 	if !rv.CanAddr() {
-		return fmt.Errorf("NeoEncoder: value must be addressable (pass a pointer)")
+		addr := reflect.New(rv.Type())
+		addr.Elem().Set(rv)
+		rv = addr.Elem()
 	}
 	info := getNeoStructInfo(rv.Type())
 	ptr := unsafe.Pointer(rv.UnsafeAddr())
