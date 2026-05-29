@@ -484,3 +484,108 @@ func TestNeo_DurationLiteral(t *testing.T) {
 		t.Errorf("Expected -10s, got %v", cfg.Timeout)
 	}
 }
+
+// TestNeo_VariableType confirms the concrete Go types stored by handleVar.
+// CodeRabbit flagged an inconsistency: fastParseInt returns int, but some
+// code paths (base decoder, map[string]any decode) expect int64.
+func TestNeo_VariableType(t *testing.T) {
+	t.Run("handleVar_stores_int", func(t *testing.T) {
+		wanfData := []byte(`
+			var x = 123
+			val = ${x}
+		`)
+		type Cfg struct {
+			Val int `wanf:"val"`
+		}
+		var cfg Cfg
+		err := NeoUnmarshal(wanfData, &cfg)
+		if err != nil {
+			t.Fatalf("NeoUnmarshal failed: %v", err)
+		}
+		if cfg.Val != 123 {
+			t.Errorf("expected 123, got %v", cfg.Val)
+		}
+	})
+
+	t.Run("handleVar_int_assigns_int64_field", func(t *testing.T) {
+		wanfData := []byte(`
+			var x = 123
+			val = ${x}
+		`)
+		type Cfg struct {
+			Val int64 `wanf:"val"`
+		}
+		var cfg Cfg
+		err := NeoUnmarshal(wanfData, &cfg)
+		if err != nil {
+			t.Fatalf("NeoUnmarshal failed: %v", err)
+		}
+		if cfg.Val != int64(123) {
+			t.Errorf("expected 123, got %v", cfg.Val)
+		}
+	})
+
+	t.Run("decodeMapStringAny_int_value_type", func(t *testing.T) {
+		// This test verifies the ACTUAL Go type stored in map[string]any
+		// when decoding with NeoUnmarshal.
+		wanfData := []byte(`
+			data = {[
+				value = 123,
+			]}
+		`)
+		type Cfg struct {
+			Data map[string]any `wanf:"data"`
+		}
+		var cfg Cfg
+		err := NeoUnmarshal(wanfData, &cfg)
+		if err != nil {
+			t.Fatalf("NeoUnmarshal failed: %v", err)
+		}
+		val, ok := cfg.Data["value"]
+		if !ok {
+			t.Fatal("key 'value' not found in map")
+		}
+		t.Logf("decodeMapStringAny stores INT as: %T(%v)", val, val)
+
+		if _, isInt64 := val.(int64); isInt64 {
+			t.Log("Type is int64 (matches base decoder)")
+		} else {
+			t.Errorf("expected int64 type, got %T", val)
+		}
+
+		if val.(int64) != 123 {
+			t.Errorf("value mismatch: got %v", val)
+		}
+	})
+
+	t.Run("decodeMapStringAny_int_value_equality", func(t *testing.T) {
+		// Following the same pattern as TestDecodeMapAny which uses
+		// base decoder and expects int64(123). This tests the Neo path.
+		wanfData := []byte(`
+			data = {[
+				value = 123,
+			]}
+		`)
+		type Cfg struct {
+			Data map[string]any `wanf:"data"`
+		}
+		var baseCfg Cfg
+		err := Decode(wanfData, &baseCfg)
+		if err != nil {
+			t.Fatalf("Decode failed: %v", err)
+		}
+		t.Logf("Base decoder stores INT as: %T(%v)", baseCfg.Data["value"], baseCfg.Data["value"])
+
+		var neoCfg Cfg
+		err = NeoUnmarshal(wanfData, &neoCfg)
+		if err != nil {
+			t.Fatalf("NeoUnmarshal failed: %v", err)
+		}
+		t.Logf("Neo decoder stores INT as: %T(%v)", neoCfg.Data["value"], neoCfg.Data["value"])
+
+		// Both should be int64 to match
+		if _, ok := neoCfg.Data["value"].(int64); !ok {
+			t.Errorf("Neo decoder: expected int64, got %T", neoCfg.Data["value"])
+		}
+	})
+}

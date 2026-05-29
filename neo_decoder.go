@@ -181,7 +181,7 @@ func (dec *NeoDecoder) handleVar() error {
 	case STRING:
 		dec.variables[name] = BytesToString(valTok.Literal)
 	case INT:
-		dec.variables[name] = dec.fastParseInt(valTok.Literal)
+		dec.variables[name] = int64(dec.fastParseInt(valTok.Literal))
 	case FLOAT:
 		f64, _ := strconv.ParseFloat(BytesToString(valTok.Literal), 64)
 		dec.variables[name] = f64
@@ -1015,7 +1015,7 @@ func (dec *NeoDecoder) decodeMapStringAny(rv reflect.Value, hasBracket bool) {
 		case STRING:
 			val = BytesToString(valTok.Literal)
 		case INT:
-			val = dec.fastParseInt(valTok.Literal)
+			val = int64(dec.fastParseInt(valTok.Literal))
 		case FLOAT:
 			f64, _ := strconv.ParseFloat(BytesToString(valTok.Literal), 64)
 			val = f64
