@@ -160,6 +160,11 @@ func (enc *NeoEncoder) encodeField(f neoField, ptr unsafe.Pointer) {
 		enc.encodeSlice(f, ptr)
 	case reflect.Map:
 		enc.encodeMap(f, ptr)
+	case reflect.Interface:
+		val := *(*any)(ptr)
+		if val != nil {
+			enc.writeValueAny(val)
+		}
 	}
 }
 
@@ -187,6 +192,8 @@ func (enc *NeoEncoder) isZero(f neoField, ptr unsafe.Pointer) bool {
 		}
 		rv := reflect.NewAt(f.elemType, ptr).Elem()
 		return rv.Len() == 0
+	case reflect.Interface:
+		return *(*any)(ptr) == nil
 	}
 	return false
 }

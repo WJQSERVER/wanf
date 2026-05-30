@@ -2,6 +2,7 @@ package wanf
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -485,9 +486,142 @@ func TestNeo_DurationLiteral(t *testing.T) {
 	}
 }
 
-// TestNeo_VariableType confirms the concrete Go types stored by handleVar.
-// CodeRabbit flagged an inconsistency: fastParseInt returns int, but some
-// code paths (base decoder, map[string]any decode) expect int64.
+// TestNeo_AnyField verifies Neo codec handles interface{}/any fields.
+func TestNeo_AnyField(t *testing.T) {
+	// Baseline: base Marshal works with any fields
+	t.Run("Marshal_any_field_works", func(t *testing.T) {
+		type Var struct {
+			ID    string `wanf:"id"`
+			Value any    `wanf:"value"`
+		}
+		v := Var{ID: "a", Value: float64(1.5)}
+		data, err := Marshal(&v)
+		if err != nil {
+			t.Fatalf("Marshal failed: %v", err)
+		}
+		s := string(data)
+		if !strings.Contains(s, "1.5") {
+			t.Errorf("Marshal: expected output to contain '1.5', got %q", s)
+		}
+	})
+
+	// NeoMarshal with any field writes value correctly
+	t.Run("NeoMarshal_any_field_value", func(t *testing.T) {
+		type Var struct {
+			ID    string `wanf:"id"`
+			Value any    `wanf:"value"`
+		}
+		v := Var{ID: "a", Value: float64(1.5)}
+		data, err := NeoMarshal(&v)
+		if err != nil {
+			t.Fatalf("NeoMarshal failed: %v", err)
+		}
+		s := string(data)
+		if !strings.Contains(s, "value = 1.5") {
+			t.Errorf("NeoMarshal: expected 'value = 1.5', got %q", s)
+		}
+	})
+
+	// NeoMarshal with concrete type works
+	t.Run("NeoMarshal_concrete_field_works", func(t *testing.T) {
+		type Var struct {
+			ID    string  `wanf:"id"`
+			Value float64 `wanf:"value"`
+		}
+		v := Var{ID: "a", Value: float64(1.5)}
+		data, err := NeoMarshal(&v)
+		if err != nil {
+			t.Fatalf("NeoMarshal failed: %v", err)
+		}
+		s := string(data)
+		if !strings.Contains(s, "1.5") {
+			t.Errorf("NeoMarshal concrete: expected output to contain '1.5', got %q", s)
+		}
+	})
+
+	// Round-trip: NeoMarshal + NeoUnmarshal with any
+	t.Run("NeoRoundTrip_any_field", func(t *testing.T) {
+		type Var struct {
+			ID    string `wanf:"id"`
+			Value any    `wanf:"value"`
+		}
+		v := Var{ID: "a", Value: float64(1.5)}
+		data, err := NeoMarshal(&v)
+		if err != nil {
+			t.Fatalf("NeoMarshal failed: %v", err)
+		}
+		var decoded Var
+		err = NeoUnmarshal(data, &decoded)
+		if err != nil {
+			t.Fatalf("NeoUnmarshal failed: %v", err)
+		}
+		if decoded.Value == nil {
+			t.Fatal("NeoUnmarshal: any field value is nil after decode")
+		}
+		if decoded.Value.(float64) != 1.5 {
+			t.Errorf("NeoUnmarshal: got %T(%v), want float64(1.5)", decoded.Value, decoded.Value)
+		}
+	})
+
+	// Round-trip: Marshal + Decode with any → baseline
+	t.Run("BaseRoundTrip_any_field_works", func(t *testing.T) {
+		type Var struct {
+			ID    string `wanf:"id"`
+			Value any    `wanf:"value"`
+		}
+		v := Var{ID: "a", Value: float64(1.5)}
+		data, err := Marshal(&v)
+		if err != nil {
+			t.Fatalf("Marshal failed: %v", err)
+		}
+		var decoded Var
+		err = Decode(data, &decoded)
+		if err != nil {
+			t.Fatalf("Decode failed: %v", err)
+		}
+		if decoded.Value != float64(1.5) {
+			t.Errorf("round-trip value: got %T(%v), want float64(1.5)", decoded.Value, decoded.Value)
+		}
+	})
+
+	// omitempty with nil any field → skipped
+	t.Run("NeoMarshal_omitempty_nil_any", func(t *testing.T) {
+		type Var struct {
+			Name string `wanf:"name,omitempty"`
+			Val  any    `wanf:"val,omitempty"`
+		}
+		v := Var{Name: "test", Val: nil}
+		data, err := NeoMarshal(&v)
+		if err != nil {
+			t.Fatalf("NeoMarshal failed: %v", err)
+		}
+		s := string(data)
+		if strings.Contains(s, "val") {
+			t.Errorf("omitempty nil any: expected 'val' to be omitted, got %q", s)
+		}
+		if !strings.Contains(s, "test") {
+			t.Errorf("omitempty nil any: expected 'name' to be present, got %q", s)
+		}
+	})
+
+	// omitempty with non-nil any field → written
+	t.Run("NeoMarshal_omitempty_non_nil_any", func(t *testing.T) {
+		type Var struct {
+			Name string `wanf:"name,omitempty"`
+			Val  any    `wanf:"val,omitempty"`
+		}
+		v := Var{Name: "test", Val: float64(2.0)}
+		data, err := NeoMarshal(&v)
+		if err != nil {
+			t.Fatalf("NeoMarshal failed: %v", err)
+		}
+		s := string(data)
+		if !strings.Contains(s, "val = 2") {
+			t.Errorf("omitempty non-nil any: expected 'val = 2', got %q", s)
+		}
+	})
+}
+
 func TestNeo_VariableType(t *testing.T) {
 	t.Run("handleVar_stores_int", func(t *testing.T) {
 		wanfData := []byte(`
