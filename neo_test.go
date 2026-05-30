@@ -486,10 +486,7 @@ func TestNeo_DurationLiteral(t *testing.T) {
 	}
 }
 
-// TestNeo_AnyField verifies Neo codec behavior with interface{}/any fields.
-// The Neo encoder does not handle reflect.Interface kind in encodeField,
-// causing any-typed values to be silently omitted during encoding.
-// NeoUnmarshal similarly cannot decode into any fields.
+// TestNeo_AnyField verifies Neo codec handles interface{}/any fields.
 func TestNeo_AnyField(t *testing.T) {
 	// Baseline: base Marshal works with any fields
 	t.Run("Marshal_any_field_works", func(t *testing.T) {
@@ -503,14 +500,13 @@ func TestNeo_AnyField(t *testing.T) {
 			t.Fatalf("Marshal failed: %v", err)
 		}
 		s := string(data)
-		t.Logf("Marshal output: %q", s)
 		if !strings.Contains(s, "1.5") {
-			t.Error("Marshal: expected value to contain '1.5', got empty")
+			t.Errorf("Marshal: expected output to contain '1.5', got %q", s)
 		}
 	})
 
-	// Issue: NeoMarshal with any field → value omitted
-	t.Run("NeoMarshal_any_field_empty", func(t *testing.T) {
+	// NeoMarshal with any field writes value correctly
+	t.Run("NeoMarshal_any_field_value", func(t *testing.T) {
 		type Var struct {
 			ID    string `wanf:"id"`
 			Value any    `wanf:"value"`
@@ -521,19 +517,12 @@ func TestNeo_AnyField(t *testing.T) {
 			t.Fatalf("NeoMarshal failed: %v", err)
 		}
 		s := string(data)
-		t.Logf("NeoMarshal output: %q", s)
-
-		// The field name IS written but the value is empty
-		if strings.Contains(s, "value = 1.5") {
-			t.Log("any field value is correctly written")
-		} else if strings.Contains(s, "value =") {
-			t.Log("BUG CONFIRMED: any field name is present but VALUE IS EMPTY — NeoEncoder.encodeField missing reflect.Interface case")
-		} else {
-			t.Log("any field is completely absent")
+		if !strings.Contains(s, "value = 1.5") {
+			t.Errorf("NeoMarshal: expected 'value = 1.5', got %q", s)
 		}
 	})
 
-	// Baseline: NeoMarshal with concrete type works
+	// NeoMarshal with concrete type works
 	t.Run("NeoMarshal_concrete_field_works", func(t *testing.T) {
 		type Var struct {
 			ID    string  `wanf:"id"`
@@ -545,14 +534,13 @@ func TestNeo_AnyField(t *testing.T) {
 			t.Fatalf("NeoMarshal failed: %v", err)
 		}
 		s := string(data)
-		t.Logf("NeoMarshal concrete output: %q", s)
 		if !strings.Contains(s, "1.5") {
-			t.Error("NeoMarshal concrete: expected value to contain '1.5'")
+			t.Errorf("NeoMarshal concrete: expected output to contain '1.5', got %q", s)
 		}
 	})
 
-	// Round-trip: NeoMarshal + NeoUnmarshal with any → value lost in decode
-	t.Run("NeoRoundTrip_any_field_value_lost", func(t *testing.T) {
+	// Round-trip: NeoMarshal + NeoUnmarshal with any
+	t.Run("NeoRoundTrip_any_field", func(t *testing.T) {
 		type Var struct {
 			ID    string `wanf:"id"`
 			Value any    `wanf:"value"`
@@ -562,23 +550,20 @@ func TestNeo_AnyField(t *testing.T) {
 		if err != nil {
 			t.Fatalf("NeoMarshal failed: %v", err)
 		}
-		t.Logf("NeoMarshal output: %q", string(data))
-
 		var decoded Var
 		err = NeoUnmarshal(data, &decoded)
 		if err != nil {
 			t.Fatalf("NeoUnmarshal failed: %v", err)
 		}
 		if decoded.Value == nil {
-			t.Error("NeoUnmarshal: any field value is nil after decode")
-		} else if decoded.Value.(float64) != 1.5 {
+			t.Fatal("NeoUnmarshal: any field value is nil after decode")
+		}
+		if decoded.Value.(float64) != 1.5 {
 			t.Errorf("NeoUnmarshal: got %T(%v), want float64(1.5)", decoded.Value, decoded.Value)
-		} else {
-			t.Logf("NeoUnmarshal round-trip OK: Value=%T(%v)", decoded.Value, decoded.Value)
 		}
 	})
 
-	// Round-trip: Marshal + Decode with any → works (baseline)
+	// Round-trip: Marshal + Decode with any → baseline
 	t.Run("BaseRoundTrip_any_field_works", func(t *testing.T) {
 		type Var struct {
 			ID    string `wanf:"id"`
@@ -589,10 +574,50 @@ func TestNeo_AnyField(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Marshal failed: %v", err)
 		}
+		var decoded Var
+		err = Decode(data, &decoded)
+		if err != nil {
+			t.Fatalf("Decode failed: %v", err)
+		}
+		if decoded.Value != float64(1.5) {
+			t.Errorf("round-trip value: got %T(%v), want float64(1.5)", decoded.Value, decoded.Value)
+		}
+	})
+
+	// omitempty with nil any field → skipped
+	t.Run("NeoMarshal_omitempty_nil_any", func(t *testing.T) {
+		type Var struct {
+			Name string `wanf:"name,omitempty"`
+			Val  any    `wanf:"val,omitempty"`
+		}
+		v := Var{Name: "test", Val: nil}
+		data, err := NeoMarshal(&v)
+		if err != nil {
+			t.Fatalf("NeoMarshal failed: %v", err)
+		}
 		s := string(data)
-		t.Logf("Marshal output: %q", s)
-		if !strings.Contains(s, "1") {
-			t.Error("Marshal: expected value to contain '1', got empty")
+		if strings.Contains(s, "val") {
+			t.Errorf("omitempty nil any: expected 'val' to be omitted, got %q", s)
+		}
+		if !strings.Contains(s, "test") {
+			t.Errorf("omitempty nil any: expected 'name' to be present, got %q", s)
+		}
+	})
+
+	// omitempty with non-nil any field → written
+	t.Run("NeoMarshal_omitempty_non_nil_any", func(t *testing.T) {
+		type Var struct {
+			Name string `wanf:"name,omitempty"`
+			Val  any    `wanf:"val,omitempty"`
+		}
+		v := Var{Name: "test", Val: float64(2.0)}
+		data, err := NeoMarshal(&v)
+		if err != nil {
+			t.Fatalf("NeoMarshal failed: %v", err)
+		}
+		s := string(data)
+		if !strings.Contains(s, "val = 2") {
+			t.Errorf("omitempty non-nil any: expected 'val = 2', got %q", s)
 		}
 	})
 }

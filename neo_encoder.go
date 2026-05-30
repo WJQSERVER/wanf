@@ -192,6 +192,8 @@ func (enc *NeoEncoder) isZero(f neoField, ptr unsafe.Pointer) bool {
 		}
 		rv := reflect.NewAt(f.elemType, ptr).Elem()
 		return rv.Len() == 0
+	case reflect.Interface:
+		return *(*any)(ptr) == nil
 	}
 	return false
 }
